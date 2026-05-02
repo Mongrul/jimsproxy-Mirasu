@@ -260,6 +260,25 @@ public partial class WorldClient
         quest.CompleteSoundKitID = 878;
 
         GameData.StoreQuestTemplate(response.QuestID, quest);
+
+        Framework.Logging.Log.Event("quest.template.stored", new
+        {
+            quest_id = response.QuestID,
+            quest_level = quest.QuestLevel,
+            log_title = quest.LogTitle,
+            flags = quest.Flags,
+            start_item = quest.StartItem,
+            reward_next_quest = quest.RewardNextQuest,
+            objective_count = quest.Objectives.Count,
+            objectives = quest.Objectives.ConvertAll(o => new
+            {
+                storage_index = (int)o.StorageIndex,
+                type = o.Type.ToString(),
+                object_id = o.ObjectID,
+                amount = o.Amount,
+            }),
+        });
+
         SendPacketToClient(response);
 
         //MIRASU - any SMSG_QUEST_UPDATE_ADD_ITEM credits buffered while this template was missing

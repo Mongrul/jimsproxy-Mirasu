@@ -69,6 +69,14 @@ public partial class WorldClient
             quest.DescEmotes[i].Type = packet.ReadUInt32();
             quest.DescEmotes[i].Delay = packet.ReadUInt32();
         }
+        Log.Event("quest.giver.details", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+            title = quest.QuestTitle,
+            auto_launched = quest.AutoLaunched,
+            quest_flags = quest.QuestFlags[0],
+        });
         SendPacketToClient(quest);
     }
 
@@ -139,7 +147,14 @@ public partial class WorldClient
     {
         QuestGiverStatusPkt response = new QuestGiverStatusPkt();
         response.QuestGiver.Guid = packet.ReadGuid().To128(GetSession().GameState);
-        response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(packet.ReadUInt8());
+        byte rawStatus = packet.ReadUInt8();
+        response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(rawStatus);
+        Log.Event("quest.giver.status", new
+        {
+            quest_giver_low = response.QuestGiver.Guid.GetCounter(),
+            status_raw = rawStatus,
+            status_modern = response.QuestGiver.Status.ToString(),
+        });
         SendPacketToClient(response);
     }
 
@@ -174,6 +189,18 @@ public partial class WorldClient
             ClientGossipQuest quest = ReadGossipQuestOption(packet);
             quests.QuestOptions.Add(quest);
         }
+        Log.Event("quest.giver.list", new
+        {
+            quest_giver_low = quests.QuestGiverGUID.GetCounter(),
+            quest_count = (int)count,
+            quests = quests.QuestOptions.ConvertAll(q => new
+            {
+                quest_id = q.QuestID,
+                quest_type = q.QuestType,
+                quest_level = q.QuestLevel,
+                title = q.QuestTitle,
+            }),
+        });
         SendPacketToClient(quests);
     }
 
@@ -245,6 +272,18 @@ public partial class WorldClient
         packet.ReadUInt32(); // Unk flags 3
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             packet.ReadUInt32(); // Unk flags 4
+        Log.Event("quest.giver.request_items", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+            quest_giver_creature_id = quest.QuestGiverCreatureID,
+            money_to_get = quest.MoneyToGet,
+            items_count = itemsCount,
+            items = quest.Collect.ConvertAll(c => new { object_id = c.ObjectID, amount = c.Amount }),
+            status_flags_raw = statusFlags,
+            status_flags_resolved = (uint)quest.StatusFlags,
+            ready_to_complete = (statusFlags & 3) != 0,
+        });
         SendPacketToClient(quest);
     }
 
@@ -294,6 +333,19 @@ public partial class WorldClient
             GameData.StoreOfferedRewardChoiceItems(quest.QuestData.QuestID, choiceIds);
         }
 
+        Log.Event("quest.giver.offer_reward", new
+        {
+            quest_id = quest.QuestData.QuestID,
+            quest_giver_low = quest.QuestData.QuestGiverGUID.GetCounter(),
+            quest_giver_creature_id = quest.QuestData.QuestGiverCreatureID,
+            title = quest.QuestTitle,
+            auto_launched = quest.QuestData.AutoLaunched,
+            choice_item_count = quest.QuestData.Rewards.ChoiceItemCount,
+            money = quest.QuestData.Rewards.Money,
+            xp = quest.QuestData.Rewards.XP,
+            spell_completion_id = quest.QuestData.Rewards.SpellCompletionID,
+        });
+
         SendPacketToClient(quest);
     }
 
@@ -339,6 +391,15 @@ public partial class WorldClient
 
         quest.ItemReward.ItemID = itemId;
 
+        Log.Event("quest.giver.complete", new
+        {
+            quest_id = quest.QuestID,
+            xp_reward = quest.XPReward,
+            money_reward = quest.MoneyReward,
+            item_reward_id = itemId,
+            item_reward_count = itemCount,
+        });
+
         QuestTemplate? questTemplate = GameData.GetQuestTemplate((uint)quest.QuestID);
         if (questTemplate != null && questTemplate.RewardNextQuest == 0)
         {
@@ -375,7 +436,14 @@ public partial class WorldClient
     {
         QuestGiverQuestFailed quest = new QuestGiverQuestFailed();
         quest.QuestID = packet.ReadUInt32();
-        quest.Reason = LegacyVersion.ConvertInventoryResult(packet.ReadUInt32());
+        uint rawReason = packet.ReadUInt32();
+        quest.Reason = LegacyVersion.ConvertInventoryResult(rawReason);
+        Log.Event("quest.giver.failed", new
+        {
+            quest_id = quest.QuestID,
+            inventory_result_raw = rawReason,
+            inventory_result = quest.Reason.ToString(),
+        });
         SendPacketToClient(quest);
     }
 
@@ -383,7 +451,13 @@ public partial class WorldClient
     void HandleQuestGiverInvalidQuest(WorldPacket packet)
     {
         QuestGiverInvalidQuest quest = new QuestGiverInvalidQuest();
-        quest.Reason = (QuestFailedReasons)packet.ReadUInt32();
+        uint rawReason = packet.ReadUInt32();
+        quest.Reason = (QuestFailedReasons)rawReason;
+        Log.Event("quest.giver.invalid", new
+        {
+            reason_raw = rawReason,
+            reason = quest.Reason.ToString(),
+        });
         SendPacketToClient(quest);
     }
 
@@ -392,8 +466,14 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_QUEST_UPDATE_FAILED_TIMER)]
     void HandleQuestUpdateStatus(WorldPacket packet)
     {
-        QuestUpdateStatus quest = new QuestUpdateStatus(packet.GetUniversalOpcode(false));
+        var opcode = packet.GetUniversalOpcode(false);
+        QuestUpdateStatus quest = new QuestUpdateStatus(opcode);
         quest.QuestID = packet.ReadUInt32();
+        Log.Event("quest.update.status", new
+        {
+            quest_id = quest.QuestID,
+            opcode = opcode.ToString(),
+        });
         SendPacketToClient(quest);
 
         //MIRASU - clear our per-objective running totals for this quest so a future re-accept
@@ -570,25 +650,102 @@ public partial class WorldClient
     }
 
     //MIRASU - shared credit-processing path used by both the live SMSG_QUEST_UPDATE_ADD_ITEM
-    //MIRASU   handler and the buffered-replay path. Returns true if the objective was resolved
-    //MIRASU   and the toast credit was sent; false if the QuestTemplate still isn't cached.
+    //MIRASU   handler and the buffered-replay path. Returns true if at least one matching active
+    //MIRASU   objective was resolved and at least one toast credit was sent; false if no template
+    //MIRASU   matched (caller should buffer the credit for replay after QuestQueryInfoResponse).
+    //MIRASU - Quest items can be required by MULTIPLE active quests at once (e.g. Argent Dawn turn-in
+    //MIRASU   chains where multiple AD quests want Bone Fragments). We fan one wire credit out to
+    //MIRASU   every matched active quest so each quest's toast / running-total advances independently;
+    //MIRASU   prior single-match behavior would silently strand the second quest at 0/N forever.
     private bool ProcessQuestItemCredit(uint itemId, uint count, bool replayed)
     {
-        QuestObjective? objective = GameData.GetQuestObjectiveForItem(itemId);
-        if (objective == null)
+        var allObjectives = GameData.GetAllQuestObjectivesForItem(itemId);
+        if (allObjectives.Count == 0)
             return false;
+
+        //MIRASU - filter template matches down to objectives whose quest is in the player's CURRENT
+        //MIRASU   quest log. The template cache persists post-completion/abandon, so without this
+        //MIRASU   filter we'd credit a stale quest the player no longer has. Read the legacy quest
+        //MIRASU   log once here and reuse for both the active-set filter and the seed lookups below.
+        var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
+        var activeQuestSlots = new Dictionary<uint, (int Slot, QuestLog Entry)>();
+        if (updateFields != null)
+        {
+            int questsCount = LegacyVersion.GetQuestLogSize();
+            for (int i = 0; i < questsCount; i++)
+            {
+                QuestLog? logEntry = ReadQuestLogEntry(i, null, updateFields);
+                if (logEntry?.QuestID is int qid && qid != 0)
+                    activeQuestSlots[(uint)qid] = (i, logEntry);
+            }
+        }
+
+        var activeObjectives = new List<QuestObjective>();
+        foreach (var obj in allObjectives)
+        {
+            if (activeQuestSlots.ContainsKey(obj.QuestID))
+                activeObjectives.Add(obj);
+        }
+
+        if (activeObjectives.Count == 0)
+        {
+            //MIRASU - template(s) match but none of them are in the active quest log. Treat as resolved
+            //MIRASU   (don't buffer for replay: more QueryQuestInfoResponses won't change which quests
+            //MIRASU   the player is on). Drop silently with diagnostic so we can spot mis-categorized
+            //MIRASU   loot drops later if they ever surface.
+            Log.Event("quest.item.no_active_quest", new
+            {
+                item_id = itemId,
+                wire_count = count,
+                replayed,
+                template_match_count = allObjectives.Count,
+                template_quest_ids = allObjectives.ConvertAll(o => o.QuestID),
+            });
+            return true;
+        }
+
+        if (activeObjectives.Count > 1)
+        {
+            Log.Event("quest.item.multi_match", new
+            {
+                item_id = itemId,
+                wire_count = count,
+                replayed,
+                quest_ids = activeObjectives.ConvertAll(o => o.QuestID),
+            });
+        }
 
         //MIRASU - restore saved per-character running totals if this is the first item credit since
         //MIRASU   a logout-to-charselect relog. No-op if already restored or nothing was saved for
         //MIRASU   the current player guid.
         GetSession().EnsureQuestItemProgressRestored();
 
+        foreach (var objective in activeObjectives)
+            CreditSingleItemObjective(itemId, count, objective, replayed, updateFields, activeQuestSlots);
+
+        //MIRASU - snapshot in-memory + schedule debounced disk persist. Disk write collapses rapid
+        //MIRASU   pickups into a single I/O (5s debounce). Logout/disconnect paths flush immediately.
+        //MIRASU   Single snapshot at the tail covers the multi-match fan-out.
+        GetSession().SnapshotQuestItemProgressForRestore();
+        return true;
+    }
+
+    //MIRASU - per-objective credit step extracted from ProcessQuestItemCredit so the multi-match
+    //MIRASU   fan-out can apply identical seed + increment + emit logic to each matched quest.
+    //MIRASU   Caller is responsible for EnsureQuestItemProgressRestored() (run-once) and the tail
+    //MIRASU   SnapshotQuestItemProgressForRestore() (debounced disk write).
+    private void CreditSingleItemObjective(
+        uint itemId,
+        uint count,
+        QuestObjective objective,
+        bool replayed,
+        Dictionary<int, UpdateField>? updateFields,
+        Dictionary<uint, (int Slot, QuestLog Entry)> activeQuestSlots)
+    {
         //MIRASU - track running total ourselves; legacy update-field cache isn't refreshed on partial updates
         var key = (objective.QuestID, objective.StorageIndex);
         bool seededFromCache = false;
         uint cacheValue = 0;
-        bool updateFieldsPresent = false;
-        int updateFieldsCount = 0;
         int matchedSlot = -1;
         sbyte? matchedSlotProgressRaw = null;
         if (!GetSession().GameState.QuestItemObjectiveProgress.TryGetValue(key, out uint stored))
@@ -600,27 +757,16 @@ public partial class WorldClient
             //MIRASU   the next pickup. NOTE: SavedQuestItemProgressByCharacter handles the proxy-internal
             //MIRASU   relog persistence; this seed is the second line of defense that catches mid-quest
             //MIRASU   logins where the proxy never saw the prior session at all (server-persisted progress).
-            var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
-            updateFieldsPresent = updateFields != null;
-            updateFieldsCount = updateFields?.Count ?? 0;
-            if (updateFields != null)
+            if (activeQuestSlots.TryGetValue(objective.QuestID, out var slotEntry))
             {
-                int questsCount = LegacyVersion.GetQuestLogSize();
-                for (int i = 0; i < questsCount; i++)
+                matchedSlot = slotEntry.Slot;
+                var progressNullable = slotEntry.Entry.ObjectiveProgress[objective.StorageIndex];
+                matchedSlotProgressRaw = progressNullable.HasValue ? (sbyte)progressNullable.Value : (sbyte?)null;
+                if (progressNullable != null)
                 {
-                    QuestLog? logEntry = ReadQuestLogEntry(i, null, updateFields);
-                    if (logEntry == null || logEntry.QuestID != objective.QuestID)
-                        continue;
-                    matchedSlot = i;
-                    var progressNullable = logEntry.ObjectiveProgress[objective.StorageIndex];
-                    matchedSlotProgressRaw = progressNullable.HasValue ? (sbyte)progressNullable.Value : (sbyte?)null;
-                    if (progressNullable != null)
-                    {
-                        stored = (uint)progressNullable!;
-                        cacheValue = stored;
-                        seededFromCache = true;
-                    }
-                    break;
+                    stored = (uint)progressNullable!;
+                    cacheValue = stored;
+                    seededFromCache = true;
                 }
             }
             Log.Event("quest.item.seed.attempt", new
@@ -628,8 +774,8 @@ public partial class WorldClient
                 quest_id = objective.QuestID,
                 storage_index = (int)objective.StorageIndex,
                 item_id = itemId,
-                update_fields_present = updateFieldsPresent,
-                update_fields_count = updateFieldsCount,
+                update_fields_present = updateFields != null,
+                update_fields_count = updateFields?.Count ?? 0,
                 quest_log_size = LegacyVersion.GetQuestLogSize(),
                 matched_slot = matchedSlot,
                 matched_slot_progress = matchedSlotProgressRaw,
@@ -671,11 +817,6 @@ public partial class WorldClient
         credit.Required = (ushort)objective.Amount;
         credit.VictimGUID = default; //MIRASU - no victim for item pickups; modern client ignores VictimGUID for Item objectives
         SendPacketToClient(credit);
-
-        //MIRASU - snapshot in-memory + schedule debounced disk persist. Disk write collapses rapid
-        //MIRASU   pickups into a single I/O (5s debounce). Logout/disconnect paths flush immediately.
-        GetSession().SnapshotQuestItemProgressForRestore();
-        return true;
     }
 
     [PacketHandler(Opcode.SMSG_QUEST_UPDATE_ADD_KILL)]
@@ -689,6 +830,15 @@ public partial class WorldClient
         credit.Count = (ushort)packet.ReadUInt32();
         credit.Required = (ushort)packet.ReadUInt32();
         credit.VictimGUID = packet.ReadGuid().To128(GetSession().GameState);
+        Log.Event("quest.kill.add", new
+        {
+            quest_id = credit.QuestID,
+            object_id = credit.ObjectID,
+            is_gameobject = entry.Value,
+            count = (int)credit.Count,
+            required = (int)credit.Required,
+            victim_low = credit.VictimGUID.GetCounter(),
+        });
         SendPacketToClient(credit);
     }
 
@@ -699,6 +849,12 @@ public partial class WorldClient
         quest.QuestID = packet.ReadUInt32();
         quest.QuestTitle = packet.ReadCString();
         quest.InitiatedBy = packet.ReadGuid().To128(GetSession().GameState);
+        Log.Event("quest.confirm.accept", new
+        {
+            quest_id = quest.QuestID,
+            title = quest.QuestTitle,
+            initiated_by_low = quest.InitiatedBy.GetCounter(),
+        });
         SendPacketToClient(quest);
     }
 
@@ -708,6 +864,11 @@ public partial class WorldClient
         QuestPushResult quest = new QuestPushResult();
         quest.SenderGUID = packet.ReadGuid().To128(GetSession().GameState);
         quest.Result = (QuestPushReason)packet.ReadUInt8();
+        Log.Event("quest.push.result", new
+        {
+            sender_low = quest.SenderGUID.GetCounter(),
+            result = quest.Result.ToString(),
+        });
         SendPacketToClient(quest);
     }
 }

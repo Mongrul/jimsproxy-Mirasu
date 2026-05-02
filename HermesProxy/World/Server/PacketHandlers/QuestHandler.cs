@@ -16,6 +16,12 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_QUERY_QUEST)]
     void HandleQuestGiverQueryQuest(QuestGiverQueryQuest quest)
     {
+        Log.Event("quest.client.query_quest", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+            respond_to_giver = quest.RespondToGiver,
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_QUERY_QUEST);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -26,6 +32,12 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST)]
     void HandleQuestGiverAcceptQuest(QuestGiverAcceptQuest quest)
     {
+        Log.Event("quest.client.accept", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+            start_cheat = quest.StartCheat,
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -36,6 +48,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_LOG_REMOVE_QUEST)]
     void HandleQuestLogRemoveQuest(QuestLogRemoveQuest quest)
     {
+        Log.Event("quest.client.abandon", new
+        {
+            slot = (int)quest.Slot,
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_LOG_REMOVE_QUEST);
         packet.WriteUInt8(quest.Slot);
         SendPacketToServer(packet);
@@ -117,6 +133,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_HELLO)]
     void HandleQuestGiverHello(QuestGiverHello hello)
     {
+        Log.Event("quest.client.hello", new
+        {
+            quest_giver_low = hello.QuestGiverGUID.GetCounter(),
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_HELLO);
         packet.WriteGuid(hello.QuestGiverGUID.To64());
         SendPacketToServer(packet);
@@ -124,6 +144,11 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD)]
     void HandleQuestGiverRequestReward(QuestGiverRequestReward quest)
     {
+        Log.Event("quest.client.request_reward", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -180,6 +205,13 @@ public partial class WorldSocket
             }
         }
 
+        Log.Event("quest.client.choose_reward", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+            chosen_item_id = quest.Choice.Item.ItemID,
+            choice_index = choiceIndex,
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_CHOOSE_REWARD);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -189,6 +221,11 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_COMPLETE_QUEST)]
     void HandleQuestGiverCompleteQuest(QuestGiverCompleteQuest quest)
     {
+        Log.Event("quest.client.complete_quest", new
+        {
+            quest_id = quest.QuestID,
+            quest_giver_low = quest.QuestGiverGUID.GetCounter(),
+        });
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_COMPLETE_QUEST);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);

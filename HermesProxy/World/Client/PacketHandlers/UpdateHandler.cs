@@ -2410,7 +2410,29 @@ public partial class WorldClient
                 int questsCount = LegacyVersion.GetQuestLogSize();
                 for (int i = 0; i < questsCount; i++)
                 {
-                    updateData.PlayerData.QuestLog[i] = ReadQuestLogEntry(i, updateMaskArray, updates)!;
+                    QuestLog? parsedEntry = ReadQuestLogEntry(i, updateMaskArray, updates);
+                    updateData.PlayerData.QuestLog[i] = parsedEntry!;
+                    //MIRASU - log every quest log entry update parsed from a player SMSG_UPDATE_OBJECT
+                    //MIRASU   so test bundles show what the modern client is being told. Critical for
+                    //MIRASU   diagnosing "ready to turn in but can't" reports: if ObjectiveProgress
+                    //MIRASU   reaches Required and StateFlags has the complete bit, the modern UI will
+                    //MIRASU   show the quest as turn-in-able even when the legacy server disagrees.
+                    //MIRASU   ReadQuestLogEntry returns null if no relevant fields were in this update,
+                    //MIRASU   so we only fire when something actually changed in this slot.
+                    if (parsedEntry != null)
+                    {
+                        Framework.Logging.Log.Event("quest.log.entry.update", new
+                        {
+                            slot = i,
+                            quest_id = parsedEntry.QuestID,
+                            state_flags = parsedEntry.StateFlags,
+                            objective_progress_0 = parsedEntry.ObjectiveProgress[0],
+                            objective_progress_1 = parsedEntry.ObjectiveProgress[1],
+                            objective_progress_2 = parsedEntry.ObjectiveProgress[2],
+                            objective_progress_3 = parsedEntry.ObjectiveProgress[3],
+                            end_time = parsedEntry.EndTime,
+                        });
+                    }
                 }
             }
             int PLAYER_CHOSEN_TITLE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHOSEN_TITLE);

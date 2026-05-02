@@ -172,6 +172,27 @@ public static partial class GameData
         return null;
     }
 
+    //MIRASU - return ALL active item-objectives matching this item id. Quests can share quest items
+    //MIRASU   (e.g. Argent Dawn turn-in chains where multiple AD quests want Bone Fragments). The
+    //MIRASU   single-match GetQuestObjectiveForItem will only ever credit the first quest in dict
+    //MIRASU   iteration order; the others' modern-side toast/UI never advances even though the
+    //MIRASU   legacy server's PLAYER_QUEST_LOG bit-packed counters reflect real progress for both.
+    //MIRASU   Used by ProcessQuestItemCredit to fan one wire credit out to every matched quest.
+    public static List<QuestObjective> GetAllQuestObjectivesForItem(uint entry)
+    {
+        var matches = new List<QuestObjective>();
+        foreach (var quest in QuestTemplates)
+        {
+            foreach (var objective in quest.Value.Objectives)
+            {
+                if (objective.ObjectID == entry &&
+                    objective.Type == QuestObjectiveType.Item)
+                    matches.Add(objective);
+            }
+        }
+        return matches;
+    }
+
     public static uint? GetUniqueQuestBit(uint questId)
     {
         if (!QuestBits.TryGetValue(questId, out var result))
