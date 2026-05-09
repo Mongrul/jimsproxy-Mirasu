@@ -512,6 +512,7 @@ debug.*
 
 # Claude local AI files
 .claude/*.local.*
+.claude/scheduled_tasks.lock
 
 # Build script output
 build/
