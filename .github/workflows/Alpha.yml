@@ -83,7 +83,7 @@ jobs:
         run: dotnet test --no-restore --filter "FullyQualifiedName!~MovementInfoSpanTests"
 
       - name: Publish (win-x64 self-contained)
-        run: dotnet publish HermesProxy --configuration Release --runtime win-x64 --self-contained true -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.semver }} -p:AssemblyVersion=0.0.0 -p:FileVersion=0.0.0 -p:InformationalVersion=${{ steps.ver.outputs.semver }} -p:AssemblyName=JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}
+        run: dotnet publish HermesProxy --configuration Release --runtime win-x64 --self-contained true -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.semver }} -p:AssemblyVersion=0.0.0 -p:FileVersion=0.0.0 -p:InformationalVersion=${{ steps.ver.outputs.semver }}
 
       - name: Package zip
         shell: pwsh
@@ -96,6 +96,15 @@ jobs:
           # take effect; .github/workflows/alpha-HermesProxy.config is the canonical
           # alpha config (correct ServerAddress, debug/packets/structured logging on).
           Copy-Item -Path ".github/workflows/alpha-HermesProxy.config" -Destination "$stagingName/HermesProxy.config" -Force
+          # Rename the single-file exe to encode build version (PublishSingleFile=true means
+          # the exe is self-contained, no .dll pair to keep matched). Pdb gets renamed too
+          # so a future symbolicate against a JSONL stack trace finds the right symbols.
+          $newExeName = "JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}.exe"
+          $newPdbName = "JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}.pdb"
+          Rename-Item -Path "$stagingName/JimsProxy.exe" -NewName $newExeName
+          if (Test-Path "$stagingName/JimsProxy.pdb") {
+            Rename-Item -Path "$stagingName/JimsProxy.pdb" -NewName $newPdbName
+          }
           Compress-Archive -Path $stagingName -DestinationPath "$stagingName.zip"
           Get-ChildItem "$stagingName.zip" | ForEach-Object { "Built: $($_.Name) ($([math]::Round($_.Length / 1MB, 1)) MB)" }
 
