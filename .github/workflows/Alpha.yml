@@ -53,7 +53,7 @@ jobs:
         run: dotnet test --no-restore --filter "FullyQualifiedName!~MovementInfoSpanTests"
 
       - name: Publish (win-x64 self-contained)
-        run: dotnet publish HermesProxy --configuration Release --runtime win-x64 --self-contained true -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.semver }} -p:AssemblyVersion=0.0.0 -p:FileVersion=0.0.0 -p:InformationalVersion=${{ steps.ver.outputs.semver }}
+        run: dotnet publish HermesProxy --configuration Release --runtime win-x64 --self-contained true -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.semver }} -p:AssemblyVersion=0.0.0 -p:FileVersion=0.0.0 -p:InformationalVersion=${{ steps.ver.outputs.semver }} -p:AssemblyName=JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}
 
       - name: Package zip
         shell: pwsh
@@ -77,7 +77,7 @@ jobs:
           **Channel:** alpha (Mirasu fixes layered on upstream/beta — ahead of Jim's review).
           **Platform:** Windows x64 (self-contained, no .NET install required).
 
-          Download \`JimsProxy-Mirasu-Alpha-$tag.zip\`, extract, run \`HermesProxy.exe\`.
+          Download \`JimsProxy-Mirasu-Alpha-$tag.zip\`, extract, run \`JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}.exe\`.
 
           See https://github.com/Mongrul/jimsproxy-Mirasu/tree/alpha for the source state.
           "@
