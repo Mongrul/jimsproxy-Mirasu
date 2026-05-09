@@ -46,6 +46,36 @@ jobs:
           echo "semver=$semver" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Build changelog since last alpha
+        id: changelog
+        shell: bash
+        run: |
+          # Find previous alpha tag (most recent matching alpha-* on this branch).
+          prev_tag=$(git tag --list 'alpha-*' --sort=-creatordate | head -n 1)
+          if [ -z "$prev_tag" ]; then
+            range_args="-n 10"
+            range_label="(initial alpha build — last 10 changes shown)"
+          else
+            range_args="${prev_tag}..HEAD"
+            range_label="since ${prev_tag}"
+          fi
+          # --first-parent: one entry per "thing that landed on alpha" (merge commit or
+          # direct commit). Skip release-tag commits and pure workflow tweaks if they're
+          # the only thing in a build (rare) — keep them otherwise so users see why the
+          # build differs.
+          changelog=$(git log $range_args --first-parent --pretty=format:'- %s' \
+            | grep -vE '^- (Revert|Merge branch ''master''|Merge remote-tracking branch)' \
+            || true)
+          if [ -z "$changelog" ]; then
+            changelog="- (no notable changes since last alpha)"
+          fi
+          echo "Generated changelog:"
+          echo "$changelog"
+          echo "changelog<<CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+          echo "$changelog" >> "$GITHUB_OUTPUT"
+          echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+          echo "range_label=$range_label" >> "$GITHUB_OUTPUT"
+
       - name: Restore
         run: dotnet restore
 
@@ -61,23 +91,38 @@ jobs:
           $publishDir = Get-ChildItem -Path "HermesProxy/bin/Release" -Recurse -Directory -Filter "publish" | Select-Object -First 1 -ExpandProperty FullName
           $stagingName = "JimsProxy-Mirasu-Alpha-${{ steps.ver.outputs.tag }}"
           Copy-Item -Path $publishDir -Destination $stagingName -Recurse
+          # Override the published HermesProxy.config with the alpha-specific version.
+          # The repo's HermesProxy.config has skip-worktree set so committed edits won't
+          # take effect; .github/workflows/alpha-HermesProxy.config is the canonical
+          # alpha config (correct ServerAddress, debug/packets/structured logging on).
+          Copy-Item -Path ".github/workflows/alpha-HermesProxy.config" -Destination "$stagingName/HermesProxy.config" -Force
           Compress-Archive -Path $stagingName -DestinationPath "$stagingName.zip"
           Get-ChildItem "$stagingName.zip" | ForEach-Object { "Built: $($_.Name) ($([math]::Round($_.Length / 1MB, 1)) MB)" }
 
       - name: Create alpha release
         env:
           GH_TOKEN: ${{ github.token }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          RANGE_LABEL: ${{ steps.changelog.outputs.range_label }}
         shell: pwsh
         run: |
           $tag = "${{ steps.ver.outputs.tag }}"
           $title = "Mirasu Alpha $tag"
+          $changelog = $env:CHANGELOG
+          $rangeLabel = $env:RANGE_LABEL
           $body = @"
           Auto-built alpha release from commit ${{ steps.ver.outputs.short_sha }}.
 
+          ## What's in this build $rangeLabel
+
+          $changelog
+
+          ## Install
+
+          Download \`JimsProxy-Mirasu-Alpha-$tag.zip\`, extract, replace files in your Hermes folder (config will always match), run \`JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}.exe\`.
+
           **Channel:** alpha (Mirasu fixes layered on upstream/beta — ahead of Jim's review).
           **Platform:** Windows x64 (self-contained, no .NET install required).
-
-          Download \`JimsProxy-Mirasu-Alpha-$tag.zip\`, extract, run \`JimsProxy-Mirasu-alpha-${{ steps.ver.outputs.short_sha }}.exe\`.
 
           See https://github.com/Mongrul/jimsproxy-Mirasu/tree/alpha for the source state.
           "@
