@@ -1,0 +1,85 @@
+name: Alpha Release
+
+on:
+  push:
+    branches: [alpha]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository content
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-windows-${{ hashFiles('Directory.Packages.props') }}
+          restore-keys: nuget-windows-
+
+      - name: Compute alpha tag
+        id: ver
+        shell: bash
+        run: |
+          date=$(date +%Y%m%d-%H%M%S)
+          short_sha=$(git rev-parse --short HEAD)
+          tag="alpha-${date}-${short_sha}"
+          semver="0.0.0-alpha.${date}.${short_sha}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "semver=$semver" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Test
+        run: dotnet test --no-restore --filter "FullyQualifiedName!~MovementInfoSpanTests"
+
+      - name: Publish (win-x64 self-contained)
+        run: dotnet publish HermesProxy --configuration Release --runtime win-x64 --self-contained true -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.semver }} -p:AssemblyVersion=0.0.0 -p:FileVersion=0.0.0 -p:InformationalVersion=${{ steps.ver.outputs.semver }}
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $publishDir = Get-ChildItem -Path "HermesProxy/bin/Release" -Recurse -Directory -Filter "publish" | Select-Object -First 1 -ExpandProperty FullName
+          $stagingName = "JimsProxy-Mirasu-Alpha-${{ steps.ver.outputs.tag }}"
+          Copy-Item -Path $publishDir -Destination $stagingName -Recurse
+          Compress-Archive -Path $stagingName -DestinationPath "$stagingName.zip"
+          Get-ChildItem "$stagingName.zip" | ForEach-Object { "Built: $($_.Name) ($([math]::Round($_.Length / 1MB, 1)) MB)" }
+
+      - name: Create alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $title = "Mirasu Alpha $tag"
+          $body = @"
+          Auto-built alpha release from commit ${{ steps.ver.outputs.short_sha }}.
+
+          **Channel:** alpha (Mirasu fixes layered on upstream/beta — ahead of Jim's review).
+          **Platform:** Windows x64 (self-contained, no .NET install required).
+
+          Download \`JimsProxy-Mirasu-Alpha-$tag.zip\`, extract, run \`HermesProxy.exe\`.
+
+          See https://github.com/Mongrul/jimsproxy-Mirasu/tree/alpha for the source state.
+          "@
+          $zip = Get-ChildItem "JimsProxy-Mirasu-Alpha-$tag.zip" | Select-Object -First 1
+          gh release create $tag --title $title --notes $body --prerelease $zip.FullName
