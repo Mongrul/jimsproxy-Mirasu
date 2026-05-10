@@ -157,24 +157,113 @@ local function RecolorTypeLineRed(tooltip, subclassName)
     end
 end
 
+-- Inventory-slot the modern client uses to look up "currently equipped"
+-- for compare. For two-slot equip locations (rings, trinkets, weapons)
+-- we compare against the first slot — the modern client's native compare
+-- shows the second slot in ShoppingTooltip2 separately.
+local INVTYPE_TO_INVSLOT = {
+    INVTYPE_HEAD     = INVSLOT_HEAD,
+    INVTYPE_NECK     = INVSLOT_NECK,
+    INVTYPE_SHOULDER = INVSLOT_SHOULDER,
+    INVTYPE_BODY     = INVSLOT_BODY,    -- shirt
+    INVTYPE_CHEST    = INVSLOT_CHEST,
+    INVTYPE_ROBE     = INVSLOT_CHEST,
+    INVTYPE_WAIST    = INVSLOT_WAIST,
+    INVTYPE_LEGS     = INVSLOT_LEGS,
+    INVTYPE_FEET     = INVSLOT_FEET,
+    INVTYPE_WRIST    = INVSLOT_WRIST,
+    INVTYPE_HAND     = INVSLOT_HAND,
+    INVTYPE_FINGER   = INVSLOT_FINGER1,
+    INVTYPE_TRINKET  = INVSLOT_TRINKET1,
+    INVTYPE_CLOAK    = INVSLOT_BACK,
+    INVTYPE_TABARD   = INVSLOT_TABARD,
+    INVTYPE_WEAPON         = INVSLOT_MAINHAND,
+    INVTYPE_2HWEAPON       = INVSLOT_MAINHAND,
+    INVTYPE_WEAPONMAINHAND = INVSLOT_MAINHAND,
+    INVTYPE_WEAPONOFFHAND  = INVSLOT_OFFHAND,
+    INVTYPE_HOLDABLE       = INVSLOT_OFFHAND,
+    INVTYPE_SHIELD         = INVSLOT_OFFHAND,
+    INVTYPE_RANGED         = INVSLOT_RANGED,
+    INVTYPE_THROWN         = INVSLOT_RANGED,
+    INVTYPE_RANGEDRIGHT    = INVSLOT_RANGED,
+    INVTYPE_RELIC          = INVSLOT_RANGED,
+}
+
+-- Compute hovered - equipped stat deltas and append them to the tooltip
+-- under an "If you replace this item:" header. Gated on shift OR the
+-- alwaysCompareItems CVar (matches modern client compare-tooltip
+-- behaviour). No-op when nothing is equipped in the slot.
+local function AppendStatDelta(tooltip, hoveredLink, equipLoc)
+    if not (namespace.db and namespace.db.tooltipCompare) then return end
+    if not equipLoc or equipLoc == "" then return end
+
+    local alwaysCompare = (GetCVar and GetCVar("alwaysCompareItems") == "1") or false
+    if not (IsShiftKeyDown() or alwaysCompare) then return end
+
+    local invSlot = INVTYPE_TO_INVSLOT[equipLoc]
+    if not invSlot then return end
+
+    local equippedLink = GetInventoryItemLink("player", invSlot)
+    if not equippedLink or equippedLink == hoveredLink then return end
+
+    local hoveredStats  = GetItemStats(hoveredLink)  or {}
+    local equippedStats = GetItemStats(equippedLink) or {}
+
+    local keys = {}
+    for k in pairs(hoveredStats)  do keys[k] = true end
+    for k in pairs(equippedStats) do keys[k] = true end
+
+    local lines = {}
+    for key in pairs(keys) do
+        local h = tonumber(hoveredStats[key])  or 0
+        local e = tonumber(equippedStats[key]) or 0
+        local delta = h - e
+        if delta ~= 0 then
+            local localized = _G[key] or key
+            -- Some stat globals are formatted as "%d Stamina"; strip the format token.
+            localized = string.gsub(localized, "%%[%-%+%d]*[d%a]", "")
+            localized = string.gsub(localized, "^%s+", "")
+            localized = string.gsub(localized, "%s+$", "")
+            local sign = delta > 0 and "+" or ""
+            local color = delta > 0 and "|cff20ff20" or "|cffff4040"
+            table.insert(lines, string.format("%s%s%d %s|r", color, sign, delta, localized))
+        end
+    end
+
+    if #lines == 0 then return end
+
+    tooltip:AddLine(" ")
+    tooltip:AddLine("If you replace this item:", 1, 0.82, 0)
+    for _, line in ipairs(lines) do
+        tooltip:AddLine(line)
+    end
+    tooltip:Show() -- force recalc
+end
+
 local function OnTooltipItem(tooltip)
     if not (namespace.db and namespace.db.tooltipFix) then return end
     local _, link = tooltip:GetItem()
     if not link then return end
 
-    local _, _, _, _, _, _, _, _, _, _, _, classId, subClassId = GetItemInfo(link)
-    if not classId or not subClassId then return end
+    local _, _, _, _, _, _, _, _, equipLoc, _, _, classId, subClassId = GetItemInfo(link)
 
-    if PlayerCanUse(classId, subClassId) then return end
-
-    local subclassName
-    if classId == ITEM_CLASS_ARMOR then
-        subclassName = GetArmorSubclassName(subClassId)
-    elseif classId == ITEM_CLASS_WEAPON then
-        subclassName = GetWeaponSubclassName(subClassId)
+    -- Recolor armor / weapon type line red when off-class.
+    if classId and subClassId and not PlayerCanUse(classId, subClassId) then
+        local subclassName
+        if classId == ITEM_CLASS_ARMOR then
+            subclassName = GetArmorSubclassName(subClassId)
+        elseif classId == ITEM_CLASS_WEAPON then
+            subclassName = GetWeaponSubclassName(subClassId)
+        end
+        RecolorTypeLineRed(tooltip, subclassName)
     end
 
-    RecolorTypeLineRed(tooltip, subclassName)
+    -- Stat-delta vs currently-equipped (only on the main GameTooltip; the
+    -- shopping tooltips would create infinite-loop comparisons against
+    -- themselves).
+    if tooltip == GameTooltip then
+        AppendStatDelta(tooltip, link, equipLoc)
+    end
 end
 
 local function HookTooltips()

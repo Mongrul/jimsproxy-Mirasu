@@ -20,5 +20,6 @@ f:SetScript("OnEvent", function(_, _, addon)
     if JimsPlusDB.petFix == nil then JimsPlusDB.petFix = true end
     if JimsPlusDB.taxiFix == nil then JimsPlusDB.taxiFix = true end
     if JimsPlusDB.tooltipFix == nil then JimsPlusDB.tooltipFix = true end
+    if JimsPlusDB.tooltipCompare == nil then JimsPlusDB.tooltipCompare = true end
     namespace.db = JimsPlusDB
 end)
