@@ -199,5 +199,27 @@ public static class ProficiencyData
             || WeaponProficiencySpells.ContainsKey(spellId);
     }
 
+    // Inverse of ArmorProficiencySpells / WeaponProficiencySpells: given a
+    // computed mask (armor or weapon), returns the proficiency spell IDs
+    // the modern client expects to find in the known-spells list to render
+    // those subclasses as wearable / wieldable.
+    public static IEnumerable<uint> GetSpellIdsForArmorMask(uint armorMask)
+    {
+        foreach (var kv in ArmorProficiencySpells)
+        {
+            if ((armorMask & (1u << kv.Value)) != 0)
+                yield return kv.Key;
+        }
+    }
+
+    public static IEnumerable<uint> GetSpellIdsForWeaponMask(uint weaponMask)
+    {
+        foreach (var kv in WeaponProficiencySpells)
+        {
+            if ((weaponMask & (1u << kv.Value)) != 0)
+                yield return kv.Key;
+        }
+    }
+
     private static uint Bit(int subclass) => 1u << subclass;
 }

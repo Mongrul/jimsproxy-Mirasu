@@ -132,6 +132,13 @@ public sealed class GameSessionData
     // sentinel so the first computation always emits.
     public uint LastSynthesizedArmorMask = uint.MaxValue;
     public uint LastSynthesizedWeaponMask = uint.MaxValue;
+    // Modern 1.14 Classic Era client deprecated SMSG_SET_PROFICIENCY for the
+    // tooltip-color check; it consults the known-spells list instead, looking
+    // for proficiency-granting spell IDs (9077=Cloth, 9078=Leather, 8737=Mail,
+    // 750=Plate, 9116=Shield + the weapon-skill spells). Set of proficiency
+    // spell IDs the proxy has synth-injected via SMSG_LEARNED_SPELLS so we
+    // don't re-send (which would spawn duplicate "you learned" toasts).
+    public System.Collections.Generic.HashSet<uint> SynthInjectedProficiencySpells = new();
     // JimsProxy: spells in the active player's spellbook (SMSG_SEND_KNOWN_SPELLS).
     // Used by the synthesized-spell-crit path to pick up talent passives that get
     // CastSpell()'d on self by the legacy server but don't appear in the visible

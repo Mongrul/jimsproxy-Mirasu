@@ -62,6 +62,10 @@ public partial class WorldClient
         if (!armorChanged && !weaponChanged)
             return;
 
+        // SMSG_SET_PROFICIENCY (legacy): forwarded for completeness, but the
+        // modern 1.14 Classic Era client appears to ignore it for the
+        // tooltip-color path (verified in tester JSONL: synth fired with
+        // correct mask, tooltip stayed white).
         if (armorChanged)
         {
             SendPacketToClient(new SetProficiency
@@ -80,6 +84,37 @@ public partial class WorldClient
             });
         }
 
+        // SMSG_LEARNED_SPELLS injection: the modern 1.14 client checks the
+        // learned-spells list for proficiency spell IDs (9077=Cloth, 9078=
+        // Leather, 8737=Mail, 750=Plate, 9116=Shield, plus weapon-skill
+        // spells). Inject any proficiency spells the mask says the player
+        // has but the modern client hasn't been told about. Only sends the
+        // delta so we don't spawn duplicate "you learned X" toasts.
+        var desiredSpells = new System.Collections.Generic.List<uint>();
+        foreach (var sid in ProficiencyData.GetSpellIdsForArmorMask(armorMask))
+            desiredSpells.Add(sid);
+        foreach (var sid in ProficiencyData.GetSpellIdsForWeaponMask(weaponMask))
+            desiredSpells.Add(sid);
+
+        var newSpells = new System.Collections.Generic.List<uint>();
+        foreach (var sid in desiredSpells)
+        {
+            if (gs.SynthInjectedProficiencySpells.Add(sid))
+                newSpells.Add(sid);
+        }
+
+        if (newSpells.Count > 0)
+        {
+            var learned = new LearnedSpells();
+            learned.SuppressMessaging = true;
+            foreach (var sid in newSpells)
+            {
+                learned.Spells.Add(sid);
+                gs.CurrentPlayerKnownSpells.Add(sid);
+            }
+            SendPacketToClient(learned);
+        }
+
         Framework.Logging.Log.Event("proficiency.synthesized", new
         {
             class_id = (byte)classId,
@@ -91,6 +126,7 @@ public partial class WorldClient
             previous_armor_hex = gs.LastSynthesizedArmorMask.ToString("X8"),
             previous_weapon_hex = gs.LastSynthesizedWeaponMask.ToString("X8"),
             known_spell_count = gs.CurrentPlayerKnownSpells.Count,
+            injected_spell_ids = newSpells,
         });
 
         gs.LastSynthesizedArmorMask = armorMask;
