@@ -119,6 +119,18 @@ public sealed class GameSessionData
     public byte CurrentPlayerClass;
     public byte CurrentPlayerLevel;
     public int CurrentPlayerIntellect;
+    // JimsProxy (proficiency-synth 2026-05-10): tracks whether we've already
+    // synthesized SMSG_SET_PROFICIENCY for the local player this session, and
+    // whether the level-40 armor upgrade boundary has been crossed since the
+    // last emission. Vanilla 1.12 servers skip the at-login proficiency
+    // broadcast (Twinstar Kronos confirmed silent in tester JSONL); the
+    // modern client falls back to "no restrictions" rendering all off-class
+    // armor / weapons in white. Synthesizing on first class observation —
+    // and re-emitting if the player crosses level 40 (Hunter / Shaman gain
+    // Mail; Warrior / Paladin gain Plate) — restores the red color and the
+    // cross-class equip-compare display.
+    public bool ProficienciesSynthesized;
+    public byte ProficienciesSynthesizedAtLevel;
     // JimsProxy: spells in the active player's spellbook (SMSG_SEND_KNOWN_SPELLS).
     // Used by the synthesized-spell-crit path to pick up talent passives that get
     // CastSpell()'d on self by the legacy server but don't appear in the visible

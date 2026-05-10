@@ -1841,7 +1841,10 @@ public partial class WorldClient
             {
                 updateData.UnitData.Level = updates[UNIT_FIELD_LEVEL].Int32Value;
                 if (guid == GetSession().GameState.CurrentPlayerGuid)
+                {
                     GetSession().GameState.CurrentPlayerLevel = (byte)updates[UNIT_FIELD_LEVEL].Int32Value;
+                    MaybeSynthesizeProficiencies();
+                }
             }
             int UNIT_FIELD_FACTIONTEMPLATE = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FACTIONTEMPLATE);
             if (UNIT_FIELD_FACTIONTEMPLATE >= 0 && updateMaskArray[UNIT_FIELD_FACTIONTEMPLATE])
@@ -1857,7 +1860,10 @@ public partial class WorldClient
                 updateData.UnitData.SexId = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 16) & 0xFF);
                 updateData.UnitData.DisplayPower = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 24) & 0xFF);
                 if (guid == GetSession().GameState.CurrentPlayerGuid)
+                {
                     GetSession().GameState.CurrentPlayerClass = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 8) & 0xFF);
+                    MaybeSynthesizeProficiencies();
+                }
 
                 if (guid.GetHighType() == HighGuidType.Pet && updateData.UnitData.DisplayPower == (uint)PowerType.Focus)
                     GetSession().GameState.HunterPetGuids.Add(guid);

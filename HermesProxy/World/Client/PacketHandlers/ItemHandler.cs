@@ -33,6 +33,64 @@ public partial class WorldClient
 
         SendPacketToClient(proficiency);
     }
+
+    // JimsProxy (proficiency-synth 2026-05-10): vanilla 1.12 Twinstar Kronos
+    // doesn't broadcast SMSG_SET_PROFICIENCY at session login, so the modern
+    // 1.14 client's tooltip-color logic falls back to "no restrictions" and
+    // renders off-class armor / weapons in white. The cross-class equip-
+    // compare panel is also gated on proficiency knowledge in 1.14.
+    //
+    // Synthesize the proficiency bitmask from a static class table once both
+    // class and level are known. Re-emit when crossing level 40 (Hunter /
+    // Shaman gain Mail; Warrior / Paladin gain Plate). If the legacy server
+    // ever DOES send a SMSG_SET_PROFICIENCY (e.g. mid-session AddProficiency
+    // call from a class trainer), HandleSetProficiency above forwards it
+    // unchanged and overrides our synthesized mask — that's the correct
+    // precedence.
+    public void MaybeSynthesizeProficiencies()
+    {
+        var gs = GetSession().GameState;
+        if (gs.CurrentPlayerClass == 0 || gs.CurrentPlayerLevel == 0)
+            return; // not yet known
+
+        // One-shot per session unless the level-40 boundary was crossed
+        // since the last emission.
+        bool levelBoundaryCrossed = gs.ProficienciesSynthesized
+            && gs.ProficienciesSynthesizedAtLevel < 40
+            && gs.CurrentPlayerLevel >= 40;
+        if (gs.ProficienciesSynthesized && !levelBoundaryCrossed)
+            return;
+
+        var classId = (Class)gs.CurrentPlayerClass;
+        uint armorMask = ProficiencyData.GetArmorMask(classId, gs.CurrentPlayerLevel);
+        uint weaponMask = ProficiencyData.GetWeaponMask(classId, gs.CurrentPlayerLevel);
+
+        var armorPkt = new SetProficiency
+        {
+            ProficiencyClass = (byte)ProficiencyData.ArmorClass,
+            ProficiencyMask = armorMask,
+        };
+        SendPacketToClient(armorPkt);
+
+        var weaponPkt = new SetProficiency
+        {
+            ProficiencyClass = (byte)ProficiencyData.WeaponClass,
+            ProficiencyMask = weaponMask,
+        };
+        SendPacketToClient(weaponPkt);
+
+        gs.ProficienciesSynthesized = true;
+        gs.ProficienciesSynthesizedAtLevel = gs.CurrentPlayerLevel;
+
+        Framework.Logging.Log.Event("proficiency.synthesized", new
+        {
+            class_id = (byte)classId,
+            level = gs.CurrentPlayerLevel,
+            armor_mask_hex = armorMask.ToString("X8"),
+            weapon_mask_hex = weaponMask.ToString("X8"),
+            level_boundary_crossed = levelBoundaryCrossed,
+        });
+    }
     [PacketHandler(Opcode.SMSG_BUY_SUCCEEDED)]
     void HandleBuySucceeded(WorldPacket packet)
     {
