@@ -47,6 +47,12 @@ public partial class WorldClient
         }
         SendPacketToClient(spells);
 
+        // JimsProxy (proficiency-synth): now that the known-spell set is
+        // populated for this session, recompute proficiency masks. Fires
+        // safely even before class is known — MaybeSynthesizeProficiencies
+        // returns early when class is 0.
+        MaybeSynthesizeProficiencies();
+
         ushort cooldownCount = packet.ReadUInt16();
         if (cooldownCount != 0)
         {
@@ -124,6 +130,14 @@ public partial class WorldClient
         // outbound CMSG_CAST_SPELL guard doesn't false-positive on trainer/talent grants.
         GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
         SendPacketToClient(spells);
+
+        // JimsProxy (proficiency-synth): re-evaluate synthesized proficiencies
+        // when a proficiency-granting spell is learned (e.g. paladin training
+        // Plate at 40, warrior training Polearms, hunter training Mail). The
+        // mask-change check inside MaybeSynthesizeProficiencies skips emission
+        // when nothing changed, so calling on every SMSG_LEARNED_SPELL is cheap.
+        if (ProficiencyData.IsProficiencySpell(spellId))
+            MaybeSynthesizeProficiencies();
     }
 
     [PacketHandler(Opcode.SMSG_SEND_UNLEARN_SPELLS)]

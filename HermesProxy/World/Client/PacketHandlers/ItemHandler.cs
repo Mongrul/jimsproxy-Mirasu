@@ -40,47 +40,45 @@ public partial class WorldClient
     // renders off-class armor / weapons in white. The cross-class equip-
     // compare panel is also gated on proficiency knowledge in 1.14.
     //
-    // Synthesize the proficiency bitmask from a static class table once both
-    // class and level are known. Re-emit when crossing level 40 (Hunter /
-    // Shaman gain Mail; Warrior / Paladin gain Plate). If the legacy server
-    // ever DOES send a SMSG_SET_PROFICIENCY (e.g. mid-session AddProficiency
-    // call from a class trainer), HandleSetProficiency above forwards it
-    // unchanged and overrides our synthesized mask — that's the correct
-    // precedence.
+    // Synthesize the proficiency mask from a class baseline (level-1 starting
+    // proficiencies) OR'd with bits derived from the player's known
+    // proficiency-granting spells. Re-emit whenever the mask changes so
+    // trainer additions (Plate at 40 paladin/warrior, Mail at 40 hunter/
+    // shaman, Polearms warrior, etc.) take effect immediately when the
+    // SMSG_LEARNED_SPELL arrives. If the legacy server ever DOES send a
+    // SMSG_SET_PROFICIENCY itself, HandleSetProficiency forwards it unchanged
+    // and overrides our synthesized mask — correct precedence.
     public void MaybeSynthesizeProficiencies()
     {
         var gs = GetSession().GameState;
-        if (gs.CurrentPlayerClass == 0 || gs.CurrentPlayerLevel == 0)
-            return; // not yet known
-
-        // One-shot per session unless the level-40 boundary was crossed
-        // since the last emission.
-        bool levelBoundaryCrossed = gs.ProficienciesSynthesized
-            && gs.ProficienciesSynthesizedAtLevel < 40
-            && gs.CurrentPlayerLevel >= 40;
-        if (gs.ProficienciesSynthesized && !levelBoundaryCrossed)
-            return;
+        if (gs.CurrentPlayerClass == 0)
+            return; // class not yet known
 
         var classId = (Class)gs.CurrentPlayerClass;
-        uint armorMask = ProficiencyData.GetArmorMask(classId, gs.CurrentPlayerLevel);
-        uint weaponMask = ProficiencyData.GetWeaponMask(classId, gs.CurrentPlayerLevel);
+        var (armorMask, weaponMask) = ProficiencyData.ComputeMasks(classId, gs.CurrentPlayerKnownSpells);
 
-        var armorPkt = new SetProficiency
+        bool armorChanged = armorMask != gs.LastSynthesizedArmorMask;
+        bool weaponChanged = weaponMask != gs.LastSynthesizedWeaponMask;
+        if (!armorChanged && !weaponChanged)
+            return;
+
+        if (armorChanged)
         {
-            ProficiencyClass = (byte)ProficiencyData.ArmorClass,
-            ProficiencyMask = armorMask,
-        };
-        SendPacketToClient(armorPkt);
+            SendPacketToClient(new SetProficiency
+            {
+                ProficiencyClass = (byte)ProficiencyData.ArmorClass,
+                ProficiencyMask = armorMask,
+            });
+        }
 
-        var weaponPkt = new SetProficiency
+        if (weaponChanged)
         {
-            ProficiencyClass = (byte)ProficiencyData.WeaponClass,
-            ProficiencyMask = weaponMask,
-        };
-        SendPacketToClient(weaponPkt);
-
-        gs.ProficienciesSynthesized = true;
-        gs.ProficienciesSynthesizedAtLevel = gs.CurrentPlayerLevel;
+            SendPacketToClient(new SetProficiency
+            {
+                ProficiencyClass = (byte)ProficiencyData.WeaponClass,
+                ProficiencyMask = weaponMask,
+            });
+        }
 
         Framework.Logging.Log.Event("proficiency.synthesized", new
         {
@@ -88,8 +86,15 @@ public partial class WorldClient
             level = gs.CurrentPlayerLevel,
             armor_mask_hex = armorMask.ToString("X8"),
             weapon_mask_hex = weaponMask.ToString("X8"),
-            level_boundary_crossed = levelBoundaryCrossed,
+            armor_changed = armorChanged,
+            weapon_changed = weaponChanged,
+            previous_armor_hex = gs.LastSynthesizedArmorMask.ToString("X8"),
+            previous_weapon_hex = gs.LastSynthesizedWeaponMask.ToString("X8"),
+            known_spell_count = gs.CurrentPlayerKnownSpells.Count,
         });
+
+        gs.LastSynthesizedArmorMask = armorMask;
+        gs.LastSynthesizedWeaponMask = weaponMask;
     }
     [PacketHandler(Opcode.SMSG_BUY_SUCCEEDED)]
     void HandleBuySucceeded(WorldPacket packet)
