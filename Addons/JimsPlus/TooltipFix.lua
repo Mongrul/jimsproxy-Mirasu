@@ -241,19 +241,29 @@ local function AppendStatDelta(tooltip, hoveredLink, equipLoc)
 end
 
 local function OnTooltipItem(tooltip)
-    if not (namespace.db and namespace.db.tooltipFix) then return end
+    if not namespace.db then return end
+
     local _, link = tooltip:GetItem()
     if not link then return end
+
+    if namespace.JPTT_DEBUG then
+        print("|cFFFFAA00[JimsPlus TT]|r hook fired link=" .. tostring(link))
+    end
 
     local _, _, _, _, _, _, _, _, equipLoc, _, _, classId, subClassId = GetItemInfo(link)
 
     -- Recolor armor / weapon type line red when off-class.
-    if classId and subClassId and not PlayerCanUse(classId, subClassId) then
+    if namespace.db.tooltipFix and classId and subClassId
+       and not PlayerCanUse(classId, subClassId) then
         local subclassName
         if classId == ITEM_CLASS_ARMOR then
             subclassName = GetArmorSubclassName(subClassId)
         elseif classId == ITEM_CLASS_WEAPON then
             subclassName = GetWeaponSubclassName(subClassId)
+        end
+        if namespace.JPTT_DEBUG then
+            print(string.format("|cFFFFAA00[JimsPlus TT]|r recolor classId=%s subClass=%s name=%s",
+                tostring(classId), tostring(subClassId), tostring(subclassName)))
         end
         RecolorTypeLineRed(tooltip, subclassName)
     end
@@ -283,20 +293,40 @@ local function HookTooltips()
 end
 
 function TooltipFix:Init()
-    if namespace.db.tooltipFix == nil then namespace.db.tooltipFix = true end
-    if not namespace.db.tooltipFix then return end
     HookTooltips()
 end
 
 namespace:RegisterModule("TooltipFix", function() TooltipFix:Init() end)
 
--- Run on PLAYER_LOGIN so GameTooltip and friends exist.
+-- Hook tooltips at PLAYER_LOGIN once GameTooltip and friends exist.
+-- Hook unconditionally — the OnTooltipItem callback gates each feature
+-- (tooltipFix / tooltipCompare) independently against the saved-vars
+-- so a /reload after toggling either checkbox immediately takes effect.
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function()
-    -- ADDON_LOADED may not have populated namespace.db yet; pull from saved.
     JimsPlusDB = JimsPlusDB or {}
     namespace.db = JimsPlusDB
     if JimsPlusDB.tooltipFix == nil then JimsPlusDB.tooltipFix = true end
-    if JimsPlusDB.tooltipFix then HookTooltips() end
+    if JimsPlusDB.tooltipCompare == nil then JimsPlusDB.tooltipCompare = true end
+    HookTooltips()
 end)
+
+-- Slash command for diagnosing whether the OnTooltipSetItem hook is firing.
+-- "/jptt debug on" → prints a chat line every time the hook runs.
+SLASH_JIMSPLUSTOOLTIP1 = "/jptt"
+SlashCmdList["JIMSPLUSTOOLTIP"] = function(msg)
+    msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if msg == "debug on" then
+        namespace.JPTT_DEBUG = true
+        print("|cFF00FF00[JimsPlus]|r TooltipFix debug ON. Hover an item.")
+    elseif msg == "debug off" then
+        namespace.JPTT_DEBUG = false
+        print("|cFF00FF00[JimsPlus]|r TooltipFix debug OFF.")
+    else
+        print("|cFF00FF00[JimsPlus]|r /jptt debug on  — turn on hook-fired prints")
+        print("|cFF00FF00[JimsPlus]|r /jptt debug off — turn off")
+        local has = (GameTooltip and GameTooltip.GetScript and GameTooltip:GetScript("OnTooltipSetItem")) and "yes" or "no"
+        print("|cFF00FF00[JimsPlus]|r OnTooltipSetItem script installed: " .. has)
+    end
+end
