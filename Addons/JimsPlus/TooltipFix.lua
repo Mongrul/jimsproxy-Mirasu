@@ -21,9 +21,11 @@ local ADDON_NAME, namespace = ...
 local TooltipFix = {}
 namespace.TooltipFix = TooltipFix
 
--- Item.ItemClass enum (WoW global): 2 = Armor, 4 = Weapon.
-local ITEM_CLASS_ARMOR = 2
-local ITEM_CLASS_WEAPON = 4
+-- Item.ItemClass enum as seen by GetItemInfo on the modern 1.14 Classic
+-- Era client: 2 = Weapon, 4 = Armor. (This is the reverse of the legacy
+-- vanilla DBC ordering — the modern client renumbered these.)
+local ITEM_CLASS_WEAPON = 2
+local ITEM_CLASS_ARMOR  = 4
 
 -- ItemSubClassArmor values.
 local ARMOR_SUB = {
@@ -39,120 +41,244 @@ local WPN_SUB = {
     CROSSBOW = 18, WAND = 19,
 }
 
--- Per-class allowed subclass sets. Mirrors the proxy's ProficiencyData
--- baselines. Includes level-40 armor upgrades (Hunter/Shaman → Mail,
--- Warrior/Paladin → Plate) — a 39-paladin will see Plate red, a 40+
--- paladin who's trained will see it normal.
-local CLASS_PROFICIENCY = {
+-- Vanilla-style weapon skills are unified per type — one "Swords" entry
+-- in the Skills tab covers both 1H and 2H swords. So we map a skill book
+-- entry → the list of subclasses it covers, then filter by what the class
+-- can actually equip (rogue with "Swords" → 1H only, warrior → both).
+--
+-- Skill names are English; this is a 1.14 Classic Era English client. If
+-- locale support is ever needed we can derive these via GetSpellInfo on
+-- the underlying skill spell IDs, but the English path covers the user
+-- base today.
+local SKILL_NAME_TO_WEAPON_SUBS = {
+    ["Axes"]         = { WPN_SUB.AXE_1H, WPN_SUB.AXE_2H },
+    ["Maces"]        = { WPN_SUB.MACE_1H, WPN_SUB.MACE_2H },
+    ["Swords"]       = { WPN_SUB.SWORD_1H, WPN_SUB.SWORD_2H },
+    ["Polearms"]     = { WPN_SUB.POLEARM },
+    ["Staves"]       = { WPN_SUB.STAFF },
+    ["Bows"]         = { WPN_SUB.BOW },
+    ["Guns"]         = { WPN_SUB.GUN },
+    ["Crossbows"]    = { WPN_SUB.CROSSBOW },
+    ["Daggers"]      = { WPN_SUB.DAGGER },
+    ["Thrown"]       = { WPN_SUB.THROWN },
+    ["Wands"]        = { WPN_SUB.WAND },
+    ["Fist Weapons"] = { WPN_SUB.FIST },
+}
+
+local SKILL_NAME_TO_ARMOR_SUBS = {
+    ["Cloth"]      = { ARMOR_SUB.CLOTH },
+    ["Leather"]    = { ARMOR_SUB.LEATHER },
+    ["Mail"]       = { ARMOR_SUB.MAIL },
+    ["Plate Mail"] = { ARMOR_SUB.PLATE },
+    ["Plate"]      = { ARMOR_SUB.PLATE },
+    ["Shield"]     = { ARMOR_SUB.SHIELD },
+    ["Shields"]    = { ARMOR_SUB.SHIELD },
+}
+
+-- Class capability — which subclasses each class can EVER equip. Used to
+-- disambiguate shared skills (rogue's "Swords" → 1H only).
+local CLASS_CAN_USE = {
     WARRIOR = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true, [ARMOR_SUB.SHIELD]=true },
-        armorAtLevel40 = { [ARMOR_SUB.PLATE]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true, [ARMOR_SUB.PLATE]=true, [ARMOR_SUB.SHIELD]=true },
         weapon = { [WPN_SUB.AXE_1H]=true, [WPN_SUB.AXE_2H]=true, [WPN_SUB.BOW]=true, [WPN_SUB.GUN]=true,
                    [WPN_SUB.MACE_1H]=true, [WPN_SUB.MACE_2H]=true, [WPN_SUB.POLEARM]=true,
                    [WPN_SUB.SWORD_1H]=true, [WPN_SUB.SWORD_2H]=true, [WPN_SUB.STAFF]=true,
                    [WPN_SUB.FIST]=true, [WPN_SUB.DAGGER]=true, [WPN_SUB.THROWN]=true, [WPN_SUB.CROSSBOW]=true },
     },
     PALADIN = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true, [ARMOR_SUB.SHIELD]=true, [ARMOR_SUB.LIBRAM]=true },
-        armorAtLevel40 = { [ARMOR_SUB.PLATE]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true, [ARMOR_SUB.PLATE]=true, [ARMOR_SUB.SHIELD]=true, [ARMOR_SUB.LIBRAM]=true },
         weapon = { [WPN_SUB.AXE_1H]=true, [WPN_SUB.AXE_2H]=true, [WPN_SUB.MACE_1H]=true, [WPN_SUB.MACE_2H]=true,
                    [WPN_SUB.POLEARM]=true, [WPN_SUB.SWORD_1H]=true, [WPN_SUB.SWORD_2H]=true },
     },
     HUNTER = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true },
-        armorAtLevel40 = { [ARMOR_SUB.MAIL]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true },
         weapon = { [WPN_SUB.AXE_1H]=true, [WPN_SUB.AXE_2H]=true, [WPN_SUB.BOW]=true, [WPN_SUB.GUN]=true,
                    [WPN_SUB.POLEARM]=true, [WPN_SUB.SWORD_1H]=true, [WPN_SUB.SWORD_2H]=true,
                    [WPN_SUB.STAFF]=true, [WPN_SUB.FIST]=true, [WPN_SUB.DAGGER]=true,
                    [WPN_SUB.THROWN]=true, [WPN_SUB.CROSSBOW]=true },
     },
     ROGUE = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true },
         weapon = { [WPN_SUB.BOW]=true, [WPN_SUB.GUN]=true, [WPN_SUB.MACE_1H]=true, [WPN_SUB.SWORD_1H]=true,
                    [WPN_SUB.FIST]=true, [WPN_SUB.DAGGER]=true, [WPN_SUB.THROWN]=true, [WPN_SUB.CROSSBOW]=true },
     },
     PRIEST = {
-        armor = { [ARMOR_SUB.CLOTH]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true },
         weapon = { [WPN_SUB.MACE_1H]=true, [WPN_SUB.STAFF]=true, [WPN_SUB.DAGGER]=true, [WPN_SUB.WAND]=true },
     },
     SHAMAN = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.SHIELD]=true, [ARMOR_SUB.TOTEM]=true },
-        armorAtLevel40 = { [ARMOR_SUB.MAIL]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.MAIL]=true, [ARMOR_SUB.SHIELD]=true, [ARMOR_SUB.TOTEM]=true },
         weapon = { [WPN_SUB.AXE_1H]=true, [WPN_SUB.AXE_2H]=true, [WPN_SUB.MACE_1H]=true, [WPN_SUB.MACE_2H]=true,
                    [WPN_SUB.STAFF]=true, [WPN_SUB.FIST]=true, [WPN_SUB.DAGGER]=true },
     },
     MAGE = {
-        armor = { [ARMOR_SUB.CLOTH]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true },
         weapon = { [WPN_SUB.SWORD_1H]=true, [WPN_SUB.STAFF]=true, [WPN_SUB.DAGGER]=true, [WPN_SUB.WAND]=true },
     },
     WARLOCK = {
-        armor = { [ARMOR_SUB.CLOTH]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true },
         weapon = { [WPN_SUB.SWORD_1H]=true, [WPN_SUB.STAFF]=true, [WPN_SUB.DAGGER]=true, [WPN_SUB.WAND]=true },
     },
     DRUID = {
-        armor = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.IDOL]=true },
+        armor  = { [ARMOR_SUB.CLOTH]=true, [ARMOR_SUB.LEATHER]=true, [ARMOR_SUB.IDOL]=true },
         weapon = { [WPN_SUB.MACE_1H]=true, [WPN_SUB.MACE_2H]=true, [WPN_SUB.POLEARM]=true,
                    [WPN_SUB.STAFF]=true, [WPN_SUB.FIST]=true, [WPN_SUB.DAGGER]=true },
     },
 }
 
--- Localized name of each subclass as it appears on tooltips. Used to find
--- the line we need to recolor. WoW exposes these as global strings — fall
--- back to English if a global is missing on this client/locale.
-local function GetArmorSubclassName(subclassId)
-    if subclassId == ARMOR_SUB.CLOTH   then return _G.GetItemSubClassInfo and GetItemSubClassInfo(ITEM_CLASS_ARMOR, ARMOR_SUB.CLOTH)   or "Cloth" end
-    if subclassId == ARMOR_SUB.LEATHER then return _G.GetItemSubClassInfo and GetItemSubClassInfo(ITEM_CLASS_ARMOR, ARMOR_SUB.LEATHER) or "Leather" end
-    if subclassId == ARMOR_SUB.MAIL    then return _G.GetItemSubClassInfo and GetItemSubClassInfo(ITEM_CLASS_ARMOR, ARMOR_SUB.MAIL)    or "Mail" end
-    if subclassId == ARMOR_SUB.PLATE   then return _G.GetItemSubClassInfo and GetItemSubClassInfo(ITEM_CLASS_ARMOR, ARMOR_SUB.PLATE)   or "Plate" end
-    if subclassId == ARMOR_SUB.SHIELD  then return _G.GetItemSubClassInfo and GetItemSubClassInfo(ITEM_CLASS_ARMOR, ARMOR_SUB.SHIELD)  or "Shields" end
-    return nil
-end
+-- Sets of subclass IDs the player has actually trained, refreshed from
+-- the Skills panel on PLAYER_LOGIN and SKILL_LINES_CHANGED.
+local trainedArmorSubs  = {}
+local trainedWeaponSubs = {}
+local proficienciesReady = false
 
-local function GetWeaponSubclassName(subclassId)
-    if not _G.GetItemSubClassInfo then return nil end
-    return GetItemSubClassInfo(ITEM_CLASS_WEAPON, subclassId)
-end
+local function RefreshTrainedProficiencies()
+    wipe(trainedArmorSubs)
+    wipe(trainedWeaponSubs)
 
-local function PlayerCanUse(itemClassId, itemSubClassId)
     local _, classFile = UnitClass("player")
-    local prof = CLASS_PROFICIENCY[classFile]
-    if not prof then return true end -- unknown class: don't recolor
+    local canUse = CLASS_CAN_USE[classFile]
 
-    local level = UnitLevel("player") or 1
+    local n = GetNumSkillLines and GetNumSkillLines() or 0
+    if not canUse then
+        proficienciesReady = (n > 0)
+        return
+    end
+
+    for i = 1, n do
+        local skillName, isHeader = GetSkillLineInfo(i)
+        if not isHeader and skillName then
+            local wsubs = SKILL_NAME_TO_WEAPON_SUBS[skillName]
+            if wsubs then
+                for _, s in ipairs(wsubs) do
+                    if canUse.weapon[s] then trainedWeaponSubs[s] = true end
+                end
+            end
+            local asubs = SKILL_NAME_TO_ARMOR_SUBS[skillName]
+            if asubs then
+                for _, s in ipairs(asubs) do
+                    if canUse.armor[s] then trainedArmorSubs[s] = true end
+                end
+            end
+        end
+    end
+
+    proficienciesReady = (n > 0)
+
+    if namespace.JPTT_DEBUG then
+        local wlist, alist = {}, {}
+        for sub in pairs(trainedWeaponSubs) do table.insert(wlist, tostring(sub)) end
+        for sub in pairs(trainedArmorSubs)  do table.insert(alist, tostring(sub)) end
+        table.sort(wlist) table.sort(alist)
+        print(string.format("|cFFFFAA00[JimsPlus TT]|r proficiencies refreshed — weapon subs=[%s] armor subs=[%s] (skills=%d)",
+            table.concat(wlist, ","), table.concat(alist, ","), n))
+    end
+end
+
+-- The 1.14 Classic Era client renders abbreviated subclass labels on
+-- tooltips ("Sword" / "Mace" / "Plate") rather than the full subclass
+-- names returned by GetItemSubClassInfo ("One-Handed Swords" / "Maces" /
+-- "Plate Mail"). We list every plausible candidate so EnforceTypeLineColor
+-- can match whichever the client decided to display.
+local SUBCLASS_TOOLTIP_NAMES = {
+    weapon = {
+        [WPN_SUB.AXE_1H]   = { "Axe", "Axes", "One-Handed Axes" },
+        [WPN_SUB.AXE_2H]   = { "Axe", "Axes", "Two-Handed Axes" },
+        [WPN_SUB.MACE_1H]  = { "Mace", "Maces", "One-Handed Maces" },
+        [WPN_SUB.MACE_2H]  = { "Mace", "Maces", "Two-Handed Maces" },
+        [WPN_SUB.SWORD_1H] = { "Sword", "Swords", "One-Handed Swords" },
+        [WPN_SUB.SWORD_2H] = { "Sword", "Swords", "Two-Handed Swords" },
+        [WPN_SUB.POLEARM]  = { "Polearm", "Polearms" },
+        [WPN_SUB.STAFF]    = { "Staff", "Staves" },
+        [WPN_SUB.BOW]      = { "Bow", "Bows" },
+        [WPN_SUB.GUN]      = { "Gun", "Guns" },
+        [WPN_SUB.CROSSBOW] = { "Crossbow", "Crossbows" },
+        [WPN_SUB.DAGGER]   = { "Dagger", "Daggers" },
+        [WPN_SUB.THROWN]   = { "Thrown" },
+        [WPN_SUB.WAND]     = { "Wand", "Wands" },
+        [WPN_SUB.FIST]     = { "Fist Weapon", "Fist Weapons" },
+    },
+    armor = {
+        [ARMOR_SUB.CLOTH]   = { "Cloth" },
+        [ARMOR_SUB.LEATHER] = { "Leather" },
+        [ARMOR_SUB.MAIL]    = { "Mail" },
+        [ARMOR_SUB.PLATE]   = { "Plate", "Plate Mail" },
+        [ARMOR_SUB.SHIELD]  = { "Shield", "Shields" },
+        [ARMOR_SUB.LIBRAM]  = { "Libram", "Librams", "Relic" },
+        [ARMOR_SUB.IDOL]    = { "Idol", "Idols", "Relic" },
+        [ARMOR_SUB.TOTEM]   = { "Totem", "Totems", "Relic" },
+    },
+}
+
+local function PlayerCanUse(itemClassId, itemSubClassId, itemMinLevel)
+    -- Don't recolor anything until we've successfully read the skill book
+    -- — otherwise a slow-loading skill list would mean every item flashes
+    -- red on the first tooltip.
+    if not proficienciesReady then return true end
+
+    -- Level-gated: an item the player can't equip yet because they're
+    -- under the required level is also "unusable" for our recolor.
+    if itemMinLevel and itemMinLevel > 0 then
+        local lvl = UnitLevel("player") or 1
+        if lvl < itemMinLevel then return false end
+    end
+
+    local _, classFile = UnitClass("player")
 
     if itemClassId == ITEM_CLASS_ARMOR then
-        if prof.armor and prof.armor[itemSubClassId] then return true end
-        if level >= 40 and prof.armorAtLevel40 and prof.armorAtLevel40[itemSubClassId] then return true end
-        return false
+        -- Relic types: paladin librams, druid idols, shaman totems. These
+        -- aren't trained — they're hard class-locked.
+        if itemSubClassId == ARMOR_SUB.LIBRAM then return classFile == "PALADIN" end
+        if itemSubClassId == ARMOR_SUB.IDOL   then return classFile == "DRUID"   end
+        if itemSubClassId == ARMOR_SUB.TOTEM  then return classFile == "SHAMAN"  end
+        local trained = trainedArmorSubs[itemSubClassId] == true
+        if namespace.JPTT_DEBUG then
+            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (armor) sub=%s minLvl=%s",
+                tostring(trained), tostring(itemSubClassId), tostring(itemMinLevel)))
+        end
+        return trained
     elseif itemClassId == ITEM_CLASS_WEAPON then
-        if prof.weapon and prof.weapon[itemSubClassId] then return true end
-        return false
+        local trained = trainedWeaponSubs[itemSubClassId] == true
+        if namespace.JPTT_DEBUG then
+            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (weapon) sub=%s minLvl=%s",
+                tostring(trained), tostring(itemSubClassId), tostring(itemMinLevel)))
+        end
+        return trained
     end
 
     return true -- non-armor/weapon items: don't recolor
 end
 
--- Walks tooltip lines looking for the one that exactly matches the item's
--- subclass name (e.g. "Mail" / "Plate" / "Polearms") and recolors it red.
--- Tooltip lines are FontString objects; SetTextColor is the standard recolor.
-local function RecolorTypeLineRed(tooltip, subclassName)
-    if not subclassName or subclassName == "" then return end
+-- Walks tooltip lines looking for any FontString whose text matches one
+-- of the candidate subclass display names, and explicitly sets its color.
+-- We always set a color (red when off-class, white when usable) so the
+-- modern client's own — and broken-on-vanilla-data — recolor doesn't
+-- leak through and so previous-hover red doesn't persist on reused
+-- FontStrings.
+local function EnforceTypeLineColor(tooltip, candidateNames, r, g, b)
+    if not candidateNames or #candidateNames == 0 then return end
 
     local tooltipName = tooltip:GetName()
     if not tooltipName then return end
 
-    -- Tooltips have up to ~30 lines; both Left and Right columns. The
-    -- subclass appears on the right side of the slot/type row in retail
-    -- (e.g. "Feet  ...  Mail"), and stand-alone on the left for shields.
+    local nameSet = {}
+    for _, n in ipairs(candidateNames) do nameSet[n] = true end
+
     local numLines = tooltip:NumLines()
     for i = 1, numLines do
         local rightFs = _G[tooltipName .. "TextRight" .. i]
-        if rightFs and rightFs:GetText() == subclassName then
-            rightFs:SetTextColor(1.0, 0.1, 0.1)
+        if rightFs then
+            local text = rightFs:GetText()
+            if text and nameSet[text] then
+                rightFs:SetTextColor(r, g, b)
+            end
         end
         local leftFs = _G[tooltipName .. "TextLeft" .. i]
-        if leftFs and leftFs:GetText() == subclassName then
-            leftFs:SetTextColor(1.0, 0.1, 0.1)
+        if leftFs then
+            local text = leftFs:GetText()
+            if text and nameSet[text] then
+                leftFs:SetTextColor(r, g, b)
+            end
         end
     end
 end
@@ -240,6 +366,81 @@ local function AppendStatDelta(tooltip, hoveredLink, equipLoc)
     tooltip:Show() -- force recalc
 end
 
+-- Items the player has NEVER touched aren't in the client's item cache,
+-- so GetItemInfo returns nil for everything past the link itself. We track
+-- pending items per-tooltip so GET_ITEM_INFO_RECEIVED can refresh them.
+local pendingTooltips = {}
+
+local function ApplyTooltipFeatures(tooltip, link)
+    if not namespace.db then return end
+    if not link then return end
+
+    local itemName, _, _, _, itemMinLevel, itemType, itemSubType, _, equipLoc, _, _, classId, subClassId = GetItemInfo(link)
+
+    if namespace.JPTT_DEBUG then
+        print(string.format("|cFFFFAA00[JimsPlus TT]|r apply name=%s classId=%s subClassId=%s equipLoc=%s itemType=%s itemSubType=%s minLvl=%s tooltipFix=%s",
+            tostring(itemName), tostring(classId), tostring(subClassId), tostring(equipLoc),
+            tostring(itemType), tostring(itemSubType), tostring(itemMinLevel),
+            tostring(namespace.db.tooltipFix)))
+    end
+
+    -- If the item isn't cached yet, register it for retry once
+    -- GET_ITEM_INFO_RECEIVED fires.
+    if not classId or not subClassId then
+        local itemId = tonumber(string.match(link, "item:(%d+)"))
+        if itemId then
+            pendingTooltips[itemId] = pendingTooltips[itemId] or {}
+            pendingTooltips[itemId][tooltip] = link
+        end
+        return
+    end
+
+    -- Always set the color of the type line — white when usable, red when
+    -- not. This both recolors off-class items AND undoes any incorrect
+    -- red the modern client (or a previous hover) painted on the line.
+    if namespace.db.tooltipFix and (classId == ITEM_CLASS_ARMOR or classId == ITEM_CLASS_WEAPON) then
+        local subclassNames
+        if classId == ITEM_CLASS_ARMOR then
+            subclassNames = SUBCLASS_TOOLTIP_NAMES.armor[subClassId]
+        else
+            subclassNames = SUBCLASS_TOOLTIP_NAMES.weapon[subClassId]
+        end
+        -- Build candidate list: subclass display names + the equip-loc
+        -- display string (e.g. "Two-Hand" for INVTYPE_2HWEAPON, "Feet"
+        -- for INVTYPE_FEET) so the slot/hand line on the left recolors
+        -- alongside the subclass line on the right.
+        local candidateNames = {}
+        if subclassNames then
+            for _, n in ipairs(subclassNames) do table.insert(candidateNames, n) end
+        end
+        local equipLocStr = equipLoc and _G[equipLoc]
+        if equipLocStr and equipLocStr ~= "" then
+            table.insert(candidateNames, equipLocStr)
+        end
+        if #candidateNames > 0 then
+            local usable = PlayerCanUse(classId, subClassId, itemMinLevel)
+            if namespace.JPTT_DEBUG then
+                print(string.format("|cFFFFAA00[JimsPlus TT]|r enforce color (%s) sub=%s names=[%s]",
+                    usable and "white/usable" or "red/off-class",
+                    tostring(subClassId),
+                    table.concat(candidateNames, ",")))
+            end
+            if usable then
+                EnforceTypeLineColor(tooltip, candidateNames, 1.0, 1.0, 1.0)
+            else
+                EnforceTypeLineColor(tooltip, candidateNames, 1.0, 0.1, 0.1)
+            end
+        end
+    end
+
+    -- Stat-delta vs currently-equipped (only on the main GameTooltip; the
+    -- shopping tooltips would create infinite-loop comparisons against
+    -- themselves).
+    if tooltip == GameTooltip then
+        AppendStatDelta(tooltip, link, equipLoc)
+    end
+end
+
 local function OnTooltipItem(tooltip)
     if not namespace.db then return end
 
@@ -250,29 +451,165 @@ local function OnTooltipItem(tooltip)
         print("|cFFFFAA00[JimsPlus TT]|r hook fired link=" .. tostring(link))
     end
 
-    local _, _, _, _, _, _, _, _, equipLoc, _, _, classId, subClassId = GetItemInfo(link)
+    ApplyTooltipFeatures(tooltip, link)
+end
 
-    -- Recolor armor / weapon type line red when off-class.
-    if namespace.db.tooltipFix and classId and subClassId
-       and not PlayerCanUse(classId, subClassId) then
-        local subclassName
-        if classId == ITEM_CLASS_ARMOR then
-            subclassName = GetArmorSubclassName(subClassId)
-        elseif classId == ITEM_CLASS_WEAPON then
-            subclassName = GetWeaponSubclassName(subClassId)
+-- The merchant window tints item icons red for "you can't use this" using
+-- the same broken proficiency check as the tooltip — so a rogue sees
+-- 1H Swords/Daggers/Crossbows tinted red (bad) while a 2H Axe sits white
+-- (also bad). Re-tint each visible button after the default UI is done.
+local function FixMerchantUsability()
+    if namespace.JPTT_DEBUG then
+        print(string.format("|cFFFFAA00[JimsPlus TT]|r FixMerchantUsability entered (db=%s tooltipFix=%s mfShown=%s tab=%s)",
+            tostring(namespace.db ~= nil),
+            tostring(namespace.db and namespace.db.tooltipFix),
+            tostring(MerchantFrame and MerchantFrame:IsShown()),
+            tostring(MerchantFrame and MerchantFrame.selectedTab)))
+    end
+    if not namespace.db or not namespace.db.tooltipFix then return end
+    if not MerchantFrame then return end
+    if MerchantFrame.selectedTab and MerchantFrame.selectedTab ~= 1 then return end
+
+    local perPage = MERCHANT_ITEMS_PER_PAGE or 12
+    local page = MerchantFrame.page or 1
+    local total = GetMerchantNumItems and GetMerchantNumItems() or 0
+
+    for i = 1, perPage do
+        local index = (page - 1) * perPage + i
+        local button = _G["MerchantItem" .. i .. "ItemButton"]
+        if button and index <= total then
+            local link = GetMerchantItemLink(index)
+            if link then
+                local _, _, quality, _, itemMinLevel, _, _, _, _, _, _, classId, subClassId = GetItemInfo(link)
+                if classId then
+                    -- Only armor/weapon get our proficiency check. Other
+                    -- item classes (projectiles, consumables, reagents,
+                    -- etc.) default to usable so we override whatever
+                    -- (incorrect) red the modern client painted on.
+                    local usable
+                    if classId == ITEM_CLASS_ARMOR or classId == ITEM_CLASS_WEAPON then
+                        usable = PlayerCanUse(classId, subClassId, itemMinLevel)
+                    else
+                        usable = true
+                        -- Honor the level requirement even for non-equipment.
+                        if itemMinLevel and itemMinLevel > 0 then
+                            local lvl = UnitLevel("player") or 1
+                            if lvl < itemMinLevel then usable = false end
+                        end
+                    end
+                    local r, g, b
+                    if usable then r, g, b = 1.0, 1.0, 1.0
+                    else            r, g, b = 0.9, 0.0, 0.0 end
+
+                    -- Icon + border tint.
+                    if SetItemButtonTextureVertexColor       then SetItemButtonTextureVertexColor(button, r, g, b)       end
+                    if SetItemButtonNormalTextureVertexColor then SetItemButtonNormalTextureVertexColor(button, r, g, b) end
+
+                    -- Slot background — wrap in pcall: not all 1.14 builds
+                    -- have the underlying texture.
+                    if SetItemButtonSlotVertexColor then
+                        pcall(SetItemButtonSlotVertexColor, button, r, g, b)
+                    end
+
+                    -- Newer-template IconBorder/IconOverlay (the colored
+                    -- frame around the icon).
+                    if button.IconBorder and button.IconBorder.SetVertexColor then
+                        button.IconBorder:SetVertexColor(r, g, b)
+                    end
+                    if button.IconOverlay and button.IconOverlay.SetVertexColor then
+                        button.IconOverlay:SetVertexColor(r, g, b)
+                    end
+
+                    -- Brute-force sweep: walk every Texture child of the
+                    -- button and force vertex color, skipping the icon
+                    -- image itself (we want the actual item art untouched
+                    -- — its color is set via SetItemButtonTextureVertexColor
+                    -- above). Catches anonymous border/overlay textures
+                    -- the named helpers don't reach.
+                    local iconName = "MerchantItem" .. i .. "ItemButtonIconTexture"
+                    for _, region in ipairs({ button:GetRegions() }) do
+                        if region.IsObjectType and region:IsObjectType("Texture") and region:GetName() ~= iconName then
+                            if region.SetVertexColor then
+                                region:SetVertexColor(r, g, b)
+                            end
+                            if namespace.JPTT_DEBUG and i == 1 then
+                                print(string.format("|cFFFFAA00[JimsPlus TT]|r merchant tex name=%s", tostring(region:GetName())))
+                            end
+                        end
+                    end
+
+                    -- Row-level textures (live on MerchantItem%d, not on
+                    -- ItemButton). NameFrame is the backdrop behind the
+                    -- name + price; SlotTexture is the dark inset behind
+                    -- the icon button.
+                    local rowNameFrame = _G["MerchantItem" .. i .. "NameFrame"]
+                    if rowNameFrame and rowNameFrame.SetVertexColor then
+                        rowNameFrame:SetVertexColor(r, g, b)
+                    end
+                    local rowSlot = _G["MerchantItem" .. i .. "SlotTexture"]
+                    if rowSlot and rowSlot.SetVertexColor then
+                        rowSlot:SetVertexColor(r, g, b)
+                    end
+
+                    -- Item name text. Restore the proper item-quality color
+                    -- when usable; force red when not, to match the rest
+                    -- of the tinting.
+                    local nameFs = _G["MerchantItem" .. i .. "Name"]
+                    if nameFs and nameFs.SetTextColor then
+                        if usable then
+                            local qc = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality or 1]
+                            if qc then
+                                nameFs:SetTextColor(qc.r, qc.g, qc.b)
+                            else
+                                nameFs:SetTextColor(1, 1, 1)
+                            end
+                        else
+                            nameFs:SetTextColor(0.9, 0, 0)
+                        end
+                    end
+                end
+            end
         end
-        if namespace.JPTT_DEBUG then
-            print(string.format("|cFFFFAA00[JimsPlus TT]|r recolor classId=%s subClass=%s name=%s",
-                tostring(classId), tostring(subClassId), tostring(subclassName)))
-        end
-        RecolorTypeLineRed(tooltip, subclassName)
+    end
+end
+
+local merchantHooked = false
+local function HookMerchantFrame()
+    if merchantHooked then return end
+
+    local hookedAny = false
+    if _G.MerchantFrame_UpdateMerchantInfo then
+        hooksecurefunc("MerchantFrame_UpdateMerchantInfo", FixMerchantUsability)
+        hookedAny = true
+    end
+    if _G.MerchantFrame_Update then
+        hooksecurefunc("MerchantFrame_Update", FixMerchantUsability)
+        hookedAny = true
+    end
+    if MerchantFrame and MerchantFrame.HookScript then
+        MerchantFrame:HookScript("OnShow", FixMerchantUsability)
+        hookedAny = true
     end
 
-    -- Stat-delta vs currently-equipped (only on the main GameTooltip; the
-    -- shopping tooltips would create infinite-loop comparisons against
-    -- themselves).
-    if tooltip == GameTooltip then
-        AppendStatDelta(tooltip, link, equipLoc)
+    -- Fallback: throttled OnUpdate poller. Runs every 0.25s while the
+    -- merchant is open so we can't miss whatever update path Blizzard uses.
+    if MerchantFrame and MerchantFrame.HookScript then
+        local accum = 0
+        MerchantFrame:HookScript("OnUpdate", function(_, elapsed)
+            accum = accum + (elapsed or 0)
+            if accum >= 0.25 then
+                accum = 0
+                FixMerchantUsability()
+            end
+        end)
+    end
+
+    merchantHooked = hookedAny
+    if namespace.JPTT_DEBUG then
+        print(string.format("|cFFFFAA00[JimsPlus TT]|r HookMerchantFrame attempted (UpdateMerchantInfo=%s Update=%s OnShow=%s)",
+            tostring(_G.MerchantFrame_UpdateMerchantInfo ~= nil),
+            tostring(_G.MerchantFrame_Update ~= nil),
+            tostring(MerchantFrame ~= nil)))
     end
 end
 
@@ -304,12 +641,48 @@ namespace:RegisterModule("TooltipFix", function() TooltipFix:Init() end)
 -- so a /reload after toggling either checkbox immediately takes effect.
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
-f:SetScript("OnEvent", function()
-    JimsPlusDB = JimsPlusDB or {}
-    namespace.db = JimsPlusDB
-    if JimsPlusDB.tooltipFix == nil then JimsPlusDB.tooltipFix = true end
-    if JimsPlusDB.tooltipCompare == nil then JimsPlusDB.tooltipCompare = true end
-    HookTooltips()
+f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:RegisterEvent("SKILL_LINES_CHANGED")
+f:RegisterEvent("LEARNED_SPELL_IN_TAB")
+f:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+f:RegisterEvent("MERCHANT_SHOW")
+f:RegisterEvent("MERCHANT_UPDATE")
+f:SetScript("OnEvent", function(_, event, arg1)
+    if event == "PLAYER_LOGIN" then
+        JimsPlusDB = JimsPlusDB or {}
+        namespace.db = JimsPlusDB
+        if JimsPlusDB.tooltipFix == nil then JimsPlusDB.tooltipFix = true end
+        if JimsPlusDB.tooltipCompare == nil then JimsPlusDB.tooltipCompare = true end
+        HookTooltips()
+        HookMerchantFrame()
+        RefreshTrainedProficiencies()
+    elseif event == "PLAYER_ENTERING_WORLD"
+        or event == "SKILL_LINES_CHANGED"
+        or event == "LEARNED_SPELL_IN_TAB" then
+        RefreshTrainedProficiencies()
+    elseif event == "MERCHANT_SHOW" or event == "MERCHANT_UPDATE" then
+        HookMerchantFrame() -- in case Blizzard's merchant code loaded late
+        FixMerchantUsability()
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        local itemId = arg1
+        local pendings = pendingTooltips[itemId]
+        if pendings then
+            pendingTooltips[itemId] = nil
+            for tooltip, link in pairs(pendings) do
+                -- Only re-apply if the tooltip is still showing this same item.
+                if tooltip:IsShown() then
+                    local _, currentLink = tooltip:GetItem()
+                    if currentLink == link then
+                        ApplyTooltipFeatures(tooltip, link)
+                    end
+                end
+            end
+        end
+        -- Late-cached merchant items: refresh button tints when an item arrives.
+        if MerchantFrame and MerchantFrame:IsShown() then
+            FixMerchantUsability()
+        end
+    end
 end)
 
 -- Slash command for diagnosing whether the OnTooltipSetItem hook is firing.
