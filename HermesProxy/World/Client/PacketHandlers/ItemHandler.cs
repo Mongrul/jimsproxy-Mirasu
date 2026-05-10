@@ -16,6 +16,21 @@ public partial class WorldClient
         SetProficiency proficiency = new SetProficiency();
         proficiency.ProficiencyClass = packet.ReadUInt8();
         proficiency.ProficiencyMask = packet.ReadUInt32();
+
+        // JimsProxy (druid-tooltip diag 2026-05-10): tester reports "Mail" not
+        // colored red on tooltips for druids. Modern 1.14 client may have
+        // deprecated SMSG_SET_PROFICIENCY (used in WotLK+ in favor of skill
+        // list + known spells). Log every forwarded proficiency message so we
+        // can see what the legacy server actually emitted.
+        // ProficiencyClass: 2 = ITEM_CLASS_ARMOR, 4 = ITEM_CLASS_WEAPON. The
+        // ProficiencyMask is a bitmask over ItemSubClass values for that class.
+        Framework.Logging.Log.Event("proficiency.set", new
+        {
+            proficiency_class = proficiency.ProficiencyClass,
+            proficiency_mask_hex = proficiency.ProficiencyMask.ToString("X8"),
+            proficiency_mask = proficiency.ProficiencyMask,
+        });
+
         SendPacketToClient(proficiency);
     }
     [PacketHandler(Opcode.SMSG_BUY_SUCCEEDED)]

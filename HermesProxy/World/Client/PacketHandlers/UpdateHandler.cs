@@ -3001,6 +3001,7 @@ public partial class WorldClient
                 updateData.ActivePlayerData.NextLevelXP = updates[PLAYER_NEXT_LEVEL_XP].Int32Value;
             }
             int PLAYER_SKILL_INFO_1_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
+            bool anySkillSlotUpdated = false;
             if (PLAYER_SKILL_INFO_1_1 >= 0)
             {
                 for (int i = 0; i < 128; i++)
@@ -3010,6 +3011,7 @@ public partial class WorldClient
                     {
                         updateData.ActivePlayerData.Skill.SkillLineID[i] = (ushort)(updates[idIndex].UInt32Value & 0xFFFF);
                         updateData.ActivePlayerData.Skill.SkillStep[i] = (ushort)((updates[idIndex].UInt32Value >> 16) & 0xFFFF);
+                        anySkillSlotUpdated = true;
             }
                     int valueIndex = idIndex + 1;
                     if (updateMaskArray[valueIndex])
@@ -3024,6 +3026,36 @@ public partial class WorldClient
                         updateData.ActivePlayerData.Skill.SkillPermBonus[i] = (ushort)((updates[bonusIndex].UInt32Value >> 16) & 0xFFFF);
                     }
                 }
+            }
+
+            // JimsProxy (druid-tooltip diag 2026-05-10): tester reports armor
+            // class names ("Mail") not colored red on tooltips for off-class
+            // items. Modern 1.14 client may use this Skill list to determine
+            // proficiencies (skill 413=Mail, 414=Leather, 415=Cloth, 293=Plate
+            // in classic). Snapshot every non-zero skill line whenever any
+            // PLAYER_SKILL_INFO slot changes for the local player so we can
+            // see exactly what reaches the modern client. Restricted to the
+            // local player on a non-empty change to avoid log churn.
+            if (anySkillSlotUpdated && guid == GetSession().GameState.CurrentPlayerGuid)
+            {
+                var nonZero = new System.Collections.Generic.List<object>();
+                for (int i = 0; i < 128; i++)
+                {
+                    var lineId = updateData.ActivePlayerData.Skill.SkillLineID[i];
+                    if (lineId == 0) continue;
+                    nonZero.Add(new
+                    {
+                        slot = i,
+                        skill_line_id = lineId,
+                        rank = updateData.ActivePlayerData.Skill.SkillRank[i],
+                        max_rank = updateData.ActivePlayerData.Skill.SkillMaxRank[i],
+                    });
+                }
+                Log.Event("player.skills.snapshot", new
+                {
+                    skill_count = nonZero.Count,
+                    skills = nonZero,
+                });
             }
             int PLAYER_CHARACTER_POINTS1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHARACTER_POINTS1);
             if (PLAYER_CHARACTER_POINTS1 >= 0 && updateMaskArray[PLAYER_CHARACTER_POINTS1])

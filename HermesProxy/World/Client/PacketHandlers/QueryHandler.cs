@@ -517,6 +517,35 @@ public partial class WorldClient
             replyA.TableHash = reply.Hotfixes[0].TableHash;
             replyA.Data = reply.Hotfixes[0].HotfixContent;
             SendPacketToClient(replyA);
+
+            // JimsProxy (druid-tooltip diag 2026-05-10): tester reports
+            // armor-compare delta ("+56 Armor") missing from tooltip when
+            // hovering off-class items. Emit the actual ItemTemplate fields
+            // we just hotfixed so we can verify the modern client's tooltip
+            // engine has what it needs (Armor, StatType[]/StatValue[], etc.).
+            // Fires only when an ItemSparse hotfix is actually sent.
+            Framework.Logging.Log.Event("hotfix.itemsparse.fields", new
+            {
+                item_entry = item.Entry,
+                inventory_type = (byte)item.InventoryType,
+                item_class = (byte)item.Class,
+                item_subclass = (byte)item.SubClass,
+                quality = (byte)item.Quality,
+                item_level = item.ItemLevel,
+                required_level = item.RequiredLevel,
+                armor = item.Armor,
+                stat_types = new[] {
+                    item.StatTypes[0], item.StatTypes[1], item.StatTypes[2], item.StatTypes[3], item.StatTypes[4],
+                    item.StatTypes[5], item.StatTypes[6], item.StatTypes[7], item.StatTypes[8], item.StatTypes[9],
+                },
+                stat_values = new[] {
+                    item.StatValues[0], item.StatValues[1], item.StatValues[2], item.StatValues[3], item.StatValues[4],
+                    item.StatValues[5], item.StatValues[6], item.StatValues[7], item.StatValues[8], item.StatValues[9],
+                },
+                allowed_classes = item.AllowedClasses,
+                record_id = reply.Hotfixes[0].RecordId,
+                content_size = reply.Hotfixes[0].HotfixContent.GetSize(),
+            });
         }
 
         for (byte i = 0; i < 5; i++)
