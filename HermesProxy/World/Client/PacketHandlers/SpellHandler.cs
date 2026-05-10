@@ -45,12 +45,26 @@ public partial class WorldClient
             GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
             packet.ReadInt16();
         }
-        SendPacketToClient(spells);
 
-        // JimsProxy (proficiency-synth): now that the known-spell set is
-        // populated for this session, recompute proficiency masks. Fires
-        // safely even before class is known — MaybeSynthesizeProficiencies
-        // returns early when class is 0.
+        // JimsProxy (proficiency-synth): the modern 1.14 client locks its
+        // tooltip-color proficiency state from the INITIAL spell list, so
+        // post-login SMSG_LEARNED_SPELLS injections of proficiency spells
+        // don't affect armor / weapon coloring. Buffer the initial-login
+        // known-spells packet until class is known (UPDATE_OBJECT for the
+        // local player typically arrives ~60ms after SMSG_SEND_KNOWN_SPELLS
+        // at login), then MaybeSynthesizeProficiencies augments with the
+        // class's proficiency spell IDs and forwards. Subsequent
+        // SMSG_SEND_KNOWN_SPELLS deltas (InitialLogin=false) are forwarded
+        // immediately as before.
+        if (spells.InitialLogin && GetSession().GameState.CurrentPlayerClass == 0)
+        {
+            GetSession().GameState.PendingInitialKnownSpells = spells;
+        }
+        else
+        {
+            SendPacketToClient(spells);
+        }
+
         MaybeSynthesizeProficiencies();
 
         ushort cooldownCount = packet.ReadUInt16();

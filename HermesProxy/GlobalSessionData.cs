@@ -139,6 +139,16 @@ public sealed class GameSessionData
     // spell IDs the proxy has synth-injected via SMSG_LEARNED_SPELLS so we
     // don't re-send (which would spawn duplicate "you learned" toasts).
     public System.Collections.Generic.HashSet<uint> SynthInjectedProficiencySpells = new();
+
+    // The modern client appears to lock proficiency state from the INITIAL
+    // SMSG_SEND_KNOWN_SPELLS packet (post-login spell injections via
+    // SMSG_LEARNED_SPELLS don't influence the tooltip-color path).
+    // Buffer the initial known-spells packet here when class isn't yet known
+    // (UPDATE_OBJECT for the player typically arrives ~60ms AFTER
+    // SMSG_SEND_KNOWN_SPELLS at login). Once class arrives,
+    // MaybeSynthesizeProficiencies augments the buffered packet with the
+    // class's proficiency spell IDs and forwards it.
+    public World.Server.Packets.SendKnownSpells? PendingInitialKnownSpells;
     // JimsProxy: spells in the active player's spellbook (SMSG_SEND_KNOWN_SPELLS).
     // Used by the synthesized-spell-crit path to pick up talent passives that get
     // CastSpell()'d on self by the legacy server but don't appear in the visible

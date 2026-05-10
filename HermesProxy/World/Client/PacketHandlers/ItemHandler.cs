@@ -84,12 +84,17 @@ public partial class WorldClient
             });
         }
 
-        // SMSG_LEARNED_SPELLS injection: the modern 1.14 client checks the
-        // learned-spells list for proficiency spell IDs (9077=Cloth, 9078=
-        // Leather, 8737=Mail, 750=Plate, 9116=Shield, plus weapon-skill
-        // spells). Inject any proficiency spells the mask says the player
-        // has but the modern client hasn't been told about. Only sends the
-        // delta so we don't spawn duplicate "you learned X" toasts.
+        // SMSG_SEND_KNOWN_SPELLS / SMSG_LEARNED_SPELLS injection: the modern
+        // 1.14 client locks proficiency state from the INITIAL spell list,
+        // so any proficiency spells must be in the FIRST SMSG_SEND_KNOWN_SPELLS
+        // it sees. The HandleSendKnownSpells handler buffers the initial-login
+        // packet in PendingInitialKnownSpells when class isn't yet known —
+        // we augment it here and forward. After the initial login, trainer-
+        // added proficiency spells flow through SMSG_LEARNED_SPELLS naturally
+        // (HandleLearnedSpell already forwards them); we only need to
+        // synthesize a LearnedSpells for spells the legacy server didn't
+        // include in its known list at all (baseline class proficiency
+        // spells that are server-side but not in character_spell on Kronos).
         var desiredSpells = new System.Collections.Generic.List<uint>();
         foreach (var sid in ProficiencyData.GetSpellIdsForArmorMask(armorMask))
             desiredSpells.Add(sid);
@@ -103,8 +108,27 @@ public partial class WorldClient
                 newSpells.Add(sid);
         }
 
-        if (newSpells.Count > 0)
+        if (gs.PendingInitialKnownSpells != null)
         {
+            // Augment the buffered initial-login packet with proficiency
+            // spells the server didn't include, then forward. This is the
+            // path the modern client's tooltip-color check relies on.
+            var pending = gs.PendingInitialKnownSpells;
+            foreach (var sid in newSpells)
+            {
+                if (!pending.KnownSpells.Contains(sid))
+                    pending.KnownSpells.Add(sid);
+                gs.CurrentPlayerKnownSpells.Add(sid);
+            }
+            SendPacketToClient(pending);
+            gs.PendingInitialKnownSpells = null;
+        }
+        else if (newSpells.Count > 0)
+        {
+            // Post-login: trainer additions etc. Send via SMSG_LEARNED_SPELLS.
+            // Modern client may or may not honor this for the tooltip-color
+            // path — if it doesn't, the trainer flow needs a different
+            // signal entirely (relog after training would still work).
             var learned = new LearnedSpells();
             learned.SuppressMessaging = true;
             foreach (var sid in newSpells)
