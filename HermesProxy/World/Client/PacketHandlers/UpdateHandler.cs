@@ -2968,7 +2968,17 @@ public partial class WorldClient
                 // PLAYER_FIELD_* unit-field updates. Mirror the value into our finisher
                 // snapshot cache so the SMSG_SPELL_GO snapshot path knows the real CP.
                 if (guid == GetSession().GameState.CurrentPlayerGuid)
+                {
+                    var prevTarget = GetSession().GameState.CurrentComboTarget;
                     GetSession().GameState.CurrentComboTarget = newComboTarget;
+                    Log.Event("combo.target_update", new
+                    {
+                        previous_low = prevTarget.GetCounter(),
+                        new_low = newComboTarget.GetCounter(),
+                        cached_cp = GetSession().GameState.CurrentComboPoints,
+                        is_clear = newComboTarget == default,
+                    });
+                }
             }
             int PLAYER_FIELD_KNOWN_TITLES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KNOWN_TITLES);
             if (PLAYER_FIELD_KNOWN_TITLES >= 0)
@@ -3437,10 +3447,14 @@ public partial class WorldClient
                     else
                         classId = GetSession().GameState.GetUnitClass(guid.To128(GetSession().GameState));
                     sbyte powerSlot = ClassPowerTypes.GetPowerSlotForClass(classId, PowerType.ComboPoints);
+                    bool sentPowerUpdate = false;
                     if (powerSlot >= 0)
                     {
                         if (powerUpdate != null && guid == GetSession().GameState.CurrentPlayerGuid)
+                        {
                             powerUpdate.Powers.Add(new PowerUpdatePower(comboPoints, (byte)PowerType.ComboPoints));
+                            sentPowerUpdate = true;
+                        }
                         updateData.UnitData.Power[powerSlot] = comboPoints;
                     }
                     // JimsProxy (Rupture-DoT-Lingering-Icon): vanilla CP source — no
@@ -3448,7 +3462,34 @@ public partial class WorldClient
                     // only place CurrentComboPoints gets refreshed for vanilla servers.
                     // Cache regardless of class (non-rogue/druid will always read 0).
                     if (guid == GetSession().GameState.CurrentPlayerGuid)
+                    {
+                        byte prevCp = GetSession().GameState.CurrentComboPoints;
                         GetSession().GameState.CurrentComboPoints = comboPoints;
+
+                        // JimsProxy (rogue-cp-target-frame diag 2026-05-10): tester reports
+                        // combo points "randomly don't show" on the modern target frame.
+                        // Hypothesis: vanilla server only marks PLAYER_FIELD_COMBO_TARGET
+                        // dirty when the target changes. Subsequent Sinister Strikes against
+                        // the SAME mob only dirty PLAYER_FIELD_BYTES (CP byte) — the
+                        // translated UPDATE_OBJECT then carries a CP update with no
+                        // ComboTarget, and the modern client's GetComboPoints("player",
+                        // "target") returns 0. Emit one event per local-player CP byte
+                        // update so the JSONL shows whether PLAYER_FIELD_COMBO_TARGET was
+                        // co-dirty, and what the cached ComboTarget was at that moment.
+                        bool comboTargetCoDirty = PLAYER_FIELD_COMBO_TARGET >= 0 &&
+                                                  updateMaskArray[PLAYER_FIELD_COMBO_TARGET];
+                        Log.Event("combo.cp_byte_update", new
+                        {
+                            previous_cp = prevCp,
+                            new_cp = comboPoints,
+                            class_id = (byte)classId,
+                            power_slot = powerSlot,
+                            sent_power_update = sentPowerUpdate,
+                            combo_target_co_dirty = comboTargetCoDirty,
+                            cached_combo_target_low = GetSession().GameState.CurrentComboTarget.GetCounter(),
+                            cached_combo_target_is_default = GetSession().GameState.CurrentComboTarget == default,
+                        });
+                    }
                 }
                 else
                     updateData.ActivePlayerData.GrantableLevels = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 8) & 0xFF);
