@@ -210,18 +210,15 @@ local SUBCLASS_TOOLTIP_NAMES = {
     },
 }
 
-local function PlayerCanUse(itemClassId, itemSubClassId, itemMinLevel)
+-- Class-proficiency check ONLY — does NOT consider level requirement.
+-- The tooltip type-line and equip-loc recolor uses just this, since
+-- Blizzard already paints "Requires Level X" red natively. The merchant
+-- icon tinting layers on a separate level check (see FixMerchantUsability).
+local function PlayerCanUse(itemClassId, itemSubClassId)
     -- Don't recolor anything until we've successfully read the skill book
     -- — otherwise a slow-loading skill list would mean every item flashes
     -- red on the first tooltip.
     if not proficienciesReady then return true end
-
-    -- Level-gated: an item the player can't equip yet because they're
-    -- under the required level is also "unusable" for our recolor.
-    if itemMinLevel and itemMinLevel > 0 then
-        local lvl = UnitLevel("player") or 1
-        if lvl < itemMinLevel then return false end
-    end
 
     local _, classFile = UnitClass("player")
 
@@ -233,20 +230,26 @@ local function PlayerCanUse(itemClassId, itemSubClassId, itemMinLevel)
         if itemSubClassId == ARMOR_SUB.TOTEM  then return classFile == "SHAMAN"  end
         local trained = trainedArmorSubs[itemSubClassId] == true
         if namespace.JPTT_DEBUG then
-            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (armor) sub=%s minLvl=%s",
-                tostring(trained), tostring(itemSubClassId), tostring(itemMinLevel)))
+            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (armor) sub=%s",
+                tostring(trained), tostring(itemSubClassId)))
         end
         return trained
     elseif itemClassId == ITEM_CLASS_WEAPON then
         local trained = trainedWeaponSubs[itemSubClassId] == true
         if namespace.JPTT_DEBUG then
-            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (weapon) sub=%s minLvl=%s",
-                tostring(trained), tostring(itemSubClassId), tostring(itemMinLevel)))
+            print(string.format("|cFFFFAA00[JimsPlus TT]|r PlayerCanUse=%s (weapon) sub=%s",
+                tostring(trained), tostring(itemSubClassId)))
         end
         return trained
     end
 
     return true -- non-armor/weapon items: don't recolor
+end
+
+local function PlayerMeetsLevel(itemMinLevel)
+    if not itemMinLevel or itemMinLevel <= 0 then return true end
+    local lvl = UnitLevel("player") or 1
+    return lvl >= itemMinLevel
 end
 
 -- Walks tooltip lines looking for any FontString whose text matches one
@@ -281,89 +284,6 @@ local function EnforceTypeLineColor(tooltip, candidateNames, r, g, b)
             end
         end
     end
-end
-
--- Inventory-slot the modern client uses to look up "currently equipped"
--- for compare. For two-slot equip locations (rings, trinkets, weapons)
--- we compare against the first slot — the modern client's native compare
--- shows the second slot in ShoppingTooltip2 separately.
-local INVTYPE_TO_INVSLOT = {
-    INVTYPE_HEAD     = INVSLOT_HEAD,
-    INVTYPE_NECK     = INVSLOT_NECK,
-    INVTYPE_SHOULDER = INVSLOT_SHOULDER,
-    INVTYPE_BODY     = INVSLOT_BODY,    -- shirt
-    INVTYPE_CHEST    = INVSLOT_CHEST,
-    INVTYPE_ROBE     = INVSLOT_CHEST,
-    INVTYPE_WAIST    = INVSLOT_WAIST,
-    INVTYPE_LEGS     = INVSLOT_LEGS,
-    INVTYPE_FEET     = INVSLOT_FEET,
-    INVTYPE_WRIST    = INVSLOT_WRIST,
-    INVTYPE_HAND     = INVSLOT_HAND,
-    INVTYPE_FINGER   = INVSLOT_FINGER1,
-    INVTYPE_TRINKET  = INVSLOT_TRINKET1,
-    INVTYPE_CLOAK    = INVSLOT_BACK,
-    INVTYPE_TABARD   = INVSLOT_TABARD,
-    INVTYPE_WEAPON         = INVSLOT_MAINHAND,
-    INVTYPE_2HWEAPON       = INVSLOT_MAINHAND,
-    INVTYPE_WEAPONMAINHAND = INVSLOT_MAINHAND,
-    INVTYPE_WEAPONOFFHAND  = INVSLOT_OFFHAND,
-    INVTYPE_HOLDABLE       = INVSLOT_OFFHAND,
-    INVTYPE_SHIELD         = INVSLOT_OFFHAND,
-    INVTYPE_RANGED         = INVSLOT_RANGED,
-    INVTYPE_THROWN         = INVSLOT_RANGED,
-    INVTYPE_RANGEDRIGHT    = INVSLOT_RANGED,
-    INVTYPE_RELIC          = INVSLOT_RANGED,
-}
-
--- Compute hovered - equipped stat deltas and append them to the tooltip
--- under an "If you replace this item:" header. Gated on shift OR the
--- alwaysCompareItems CVar (matches modern client compare-tooltip
--- behaviour). No-op when nothing is equipped in the slot.
-local function AppendStatDelta(tooltip, hoveredLink, equipLoc)
-    if not (namespace.db and namespace.db.tooltipCompare) then return end
-    if not equipLoc or equipLoc == "" then return end
-
-    local alwaysCompare = (GetCVar and GetCVar("alwaysCompareItems") == "1") or false
-    if not (IsShiftKeyDown() or alwaysCompare) then return end
-
-    local invSlot = INVTYPE_TO_INVSLOT[equipLoc]
-    if not invSlot then return end
-
-    local equippedLink = GetInventoryItemLink("player", invSlot)
-    if not equippedLink or equippedLink == hoveredLink then return end
-
-    local hoveredStats  = GetItemStats(hoveredLink)  or {}
-    local equippedStats = GetItemStats(equippedLink) or {}
-
-    local keys = {}
-    for k in pairs(hoveredStats)  do keys[k] = true end
-    for k in pairs(equippedStats) do keys[k] = true end
-
-    local lines = {}
-    for key in pairs(keys) do
-        local h = tonumber(hoveredStats[key])  or 0
-        local e = tonumber(equippedStats[key]) or 0
-        local delta = h - e
-        if delta ~= 0 then
-            local localized = _G[key] or key
-            -- Some stat globals are formatted as "%d Stamina"; strip the format token.
-            localized = string.gsub(localized, "%%[%-%+%d]*[d%a]", "")
-            localized = string.gsub(localized, "^%s+", "")
-            localized = string.gsub(localized, "%s+$", "")
-            local sign = delta > 0 and "+" or ""
-            local color = delta > 0 and "|cff20ff20" or "|cffff4040"
-            table.insert(lines, string.format("%s%s%d %s|r", color, sign, delta, localized))
-        end
-    end
-
-    if #lines == 0 then return end
-
-    tooltip:AddLine(" ")
-    tooltip:AddLine("If you replace this item:", 1, 0.82, 0)
-    for _, line in ipairs(lines) do
-        tooltip:AddLine(line)
-    end
-    tooltip:Show() -- force recalc
 end
 
 -- Items the player has NEVER touched aren't in the client's item cache,
@@ -418,7 +338,11 @@ local function ApplyTooltipFeatures(tooltip, link)
             table.insert(candidateNames, equipLocStr)
         end
         if #candidateNames > 0 then
-            local usable = PlayerCanUse(classId, subClassId, itemMinLevel)
+            -- Tooltip type-line color reflects ONLY proficiency, not level.
+            -- Blizzard already shows "Requires Level X" in red natively
+            -- when under-level — recoloring "Waist" / "Leather" red on a
+            -- belt the rogue can wear (just not yet) would be misleading.
+            local usable = PlayerCanUse(classId, subClassId)
             if namespace.JPTT_DEBUG then
                 print(string.format("|cFFFFAA00[JimsPlus TT]|r enforce color (%s) sub=%s names=[%s]",
                     usable and "white/usable" or "red/off-class",
@@ -431,13 +355,6 @@ local function ApplyTooltipFeatures(tooltip, link)
                 EnforceTypeLineColor(tooltip, candidateNames, 1.0, 0.1, 0.1)
             end
         end
-    end
-
-    -- Stat-delta vs currently-equipped (only on the main GameTooltip; the
-    -- shopping tooltips would create infinite-loop comparisons against
-    -- themselves).
-    if tooltip == GameTooltip then
-        AppendStatDelta(tooltip, link, equipLoc)
     end
 end
 
@@ -482,21 +399,16 @@ local function FixMerchantUsability()
             if link then
                 local _, _, quality, _, itemMinLevel, _, _, _, _, _, _, classId, subClassId = GetItemInfo(link)
                 if classId then
-                    -- Only armor/weapon get our proficiency check. Other
-                    -- item classes (projectiles, consumables, reagents,
-                    -- etc.) default to usable so we override whatever
-                    -- (incorrect) red the modern client painted on.
-                    local usable
+                    -- Merchant icon tint layers proficiency + level
+                    -- together. Non-armor/weapon items (projectiles,
+                    -- consumables, reagents) skip the proficiency check
+                    -- so we override whatever incorrect red the modern
+                    -- client painted on.
+                    local proficient = true
                     if classId == ITEM_CLASS_ARMOR or classId == ITEM_CLASS_WEAPON then
-                        usable = PlayerCanUse(classId, subClassId, itemMinLevel)
-                    else
-                        usable = true
-                        -- Honor the level requirement even for non-equipment.
-                        if itemMinLevel and itemMinLevel > 0 then
-                            local lvl = UnitLevel("player") or 1
-                            if lvl < itemMinLevel then usable = false end
-                        end
+                        proficient = PlayerCanUse(classId, subClassId)
                     end
+                    local usable = proficient and PlayerMeetsLevel(itemMinLevel)
                     local r, g, b
                     if usable then r, g, b = 1.0, 1.0, 1.0
                     else            r, g, b = 0.9, 0.0, 0.0 end
@@ -652,7 +564,6 @@ f:SetScript("OnEvent", function(_, event, arg1)
         JimsPlusDB = JimsPlusDB or {}
         namespace.db = JimsPlusDB
         if JimsPlusDB.tooltipFix == nil then JimsPlusDB.tooltipFix = true end
-        if JimsPlusDB.tooltipCompare == nil then JimsPlusDB.tooltipCompare = true end
         HookTooltips()
         HookMerchantFrame()
         RefreshTrainedProficiencies()

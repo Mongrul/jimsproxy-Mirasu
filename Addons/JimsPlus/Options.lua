@@ -61,12 +61,7 @@ y = y - 28
 
 local cbTooltipFix = CreateCheckbox(panel, y,
     "Off-class armor / weapon red text  |cFFFF6600(reload required)|r",
-    "Recolors armor type and weapon type to red on item tooltips when your\nclass can't use the item (e.g. \"Mail\" on a rogue, \"Plate\" on a hunter).\n\nThe 1.14 Classic Era client gets this signal from a hardcoded table\nthe proxy can't reach over the wire — this addon does the recolor\nclient-side.\n\nChanges take effect after /reload.")
-y = y - 28
-
-local cbTooltipCompare = CreateCheckbox(panel, y,
-    "Stat comparison on Shift  |cFFFF6600(reload required)|r",
-    "Appends a \"+5 Agility / -2 Stamina\" delta block to item tooltips\nshowing what changes if you equip the hovered item, vs your currently\nequipped item in the same slot.\n\nShown when you hold Shift OR have the \"Always Show Item Compare\nTooltip\" interface option enabled (the same conditions that show\nthe modern client's compare panel).\n\nDisable this if you use another compare addon to avoid stacking.\nChanges take effect after /reload.")
+    "Recolors armor type and weapon type to red on item tooltips and vendor\nrows when your class can't use the item (e.g. \"Mail\" on a rogue, \"Plate\"\non a hunter), based on the proficiencies you've actually trained.\n\nThe 1.14 Classic Era client gets this signal from a hardcoded table\nthe proxy can't reach over the wire — this addon does the recolor\nclient-side.\n\nChanges take effect after /reload.")
 y = y - 40
 
 ---------------------------------------------------------------------------
@@ -99,7 +94,6 @@ local function RefreshCheckboxes()
     cbPetFix:SetChecked(db.petFix == true)
     cbTaxiFix:SetChecked(db.taxiFix == true)
     cbTooltipFix:SetChecked(db.tooltipFix == true)
-    cbTooltipCompare:SetChecked(db.tooltipCompare == true)
 
     local cdb = JimsPlusCastbars and JimsPlusCastbars.db
     if cdb then
@@ -143,14 +137,6 @@ cbTooltipFix:SetScript("OnClick", function(self)
         namespace.db.tooltipFix = enabled
     end
     print("|cFF00FF00[JimsPlus]|r Off-class armor red text " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
-end)
-
-cbTooltipCompare:SetScript("OnClick", function(self)
-    local enabled = self:GetChecked() and true or false
-    if namespace.db then
-        namespace.db.tooltipCompare = enabled
-    end
-    print("|cFF00FF00[JimsPlus]|r Stat comparison on Shift " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
 end)
 
 for _, info in ipairs(castbarUnits) do
