@@ -39,6 +39,23 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_SET_SELECTION)]
     void HandleSetSelection(SetSelection selection)
     {
+        // JimsProxy (rogue-cp-target-frame diag 2026-05-10): record every
+        // target switch from the client so we can correlate with combo
+        // points + cached ComboTarget at that moment. Tester reports CPs
+        // appear wiped after Esc + reselect; this lets the JSONL show
+        // whether the wipe is server-driven (CP byte zeroed) or
+        // client-display only (no wire change but UI lost the CP icons).
+        var gs = GetSession().GameState;
+        Log.Event("combo.set_selection", new
+        {
+            new_target_low = selection.TargetGUID.GetCounter(),
+            new_target_is_clear = selection.TargetGUID.IsEmpty(),
+            cached_cp = gs.CurrentComboPoints,
+            cached_combo_target_low = gs.CurrentComboTarget.GetCounter(),
+            matches_cached_combo_target = !selection.TargetGUID.IsEmpty()
+                                          && selection.TargetGUID == gs.CurrentComboTarget,
+        });
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_SELECTION);
         packet.WriteGuid(selection.TargetGUID.To64());
         SendPacketToServer(packet);
