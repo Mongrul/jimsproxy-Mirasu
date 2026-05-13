@@ -3056,7 +3056,10 @@ public partial class WorldClient
             {
                 GetSession().GameState.GetAuraDuration(target, slot, out durationLeft, out durationFull);
                 if (durationFull <= 0)
-                    durationFull = GameData.GetAuraSpellDuration(spellId);
+                {
+                    int? talentDur = GameData.TryGetTalentDuration(spellId, GetSession().GameState.CurrentPlayerKnownSpells);
+                    durationFull = talentDur ?? GameData.GetAuraSpellDuration(spellId);
+                }
             }
 
             if (durationFull > 0)
