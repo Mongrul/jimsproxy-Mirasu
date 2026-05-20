@@ -245,6 +245,28 @@ public sealed class GameSessionData
     public Dictionary<uint, WowGuid128> CachedPetNumbers = new();
     // Tracks quest ids the proxy has issued its own CMSG_QUERY_QUEST_INFO for.
     public HashSet<uint> ProxyIssuedQuestInfoQueries = new();
+    // JimsProxy: client-originated CMSG_QUERY_QUEST_INFO gating. Questie's filter-toggle
+    // SmoothReset iterates ~10k quest IDs and fires GetQuestTagInfo on each, generating
+    // thousands of CMSG_QUERY_QUEST_INFO in a single burst. Without dedupe, Kronos's
+    // anti-flood drops the connection. InFlight tracks queries already forwarded so
+    // duplicates within the round-trip window are dropped (one modern SMSG response
+    // satisfies all client-side waiters for the same quest). Negative cache tracks
+    // quest IDs the legacy server returned masked-entry on — typically TBC/Wrath
+    // quests in Questie's DB that the 1.12 server has never heard of.
+    public HashSet<uint> InFlightClientQuestInfoQueries = new();
+    public HashSet<uint> NegativeQuestInfoCache = new();
+    // JimsProxy: token-bucket rate limiter for CMSG_QUERY_QUEST_INFO. Questie's
+    // cold-start scan bursts ~1500 UNIQUE quest IDs in ~700ms (so in-flight dedupe
+    // does nothing on the first pass); this lands at >2000/sec, well past Kronos's
+    // ~80-100/sec WorldPacketLimit, and the connection gets dropped. The bucket
+    // smooths the burst to a sustained 10/sec with a 20-token initial allowance.
+    // PendingQuestQueryQueue holds IDs awaiting a token; QuestQueryDrainerRunning
+    // is a 0/1 CAS flag so at most one async drainer pumps the queue per session.
+    public System.Collections.Concurrent.ConcurrentQueue<uint> PendingQuestQueryQueue = new();
+    public double QuestQueryTokens = 20.0;
+    public long QuestQueryLastRefillMs = 0;
+    public int QuestQueryDrainerRunning = 0;
+    public readonly object QuestQueryBucketLock = new();
     // JimsProxy (pet-scale-resolve-race): Pet GUIDs whose first SCALE_X arrived
     // before SMSG_QUERY_CREATURE_RESPONSE landed.
     public Dictionary<WowGuid128, PendingPetScale> PetScaleResolvePending = new();

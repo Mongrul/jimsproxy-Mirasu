@@ -28,8 +28,14 @@ public partial class WorldClient
         QueryQuestInfoResponse response = new QueryQuestInfoResponse();
         var id = packet.ReadEntry();
         response.QuestID = (uint)id.Key;
+        // JimsProxy: pair with the CMSG_QUERY_QUEST_INFO dedupe gate in WorldSocket.
+        // Clear in-flight so subsequent CMSGs for this id (after addon retries, etc.)
+        // can re-query if needed; cache the negative response so we don't ever ask
+        // the legacy server about this id again this session.
+        GetSession().GameState.InFlightClientQuestInfoQueries.Remove(response.QuestID);
         if (id.Value) // entry is masked
         {
+            GetSession().GameState.NegativeQuestInfoCache.Add(response.QuestID);
             response.Allow = false;
             SendPacketToClient(response);
             return;
