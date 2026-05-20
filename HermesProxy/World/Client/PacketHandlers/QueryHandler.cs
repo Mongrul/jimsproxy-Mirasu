@@ -32,10 +32,10 @@ public partial class WorldClient
         // Clear in-flight so subsequent CMSGs for this id (after addon retries, etc.)
         // can re-query if needed; cache the negative response so we don't ever ask
         // the legacy server about this id again this session.
-        GetSession().GameState.InFlightClientQuestInfoQueries.Remove(response.QuestID);
+        GetSession().GameState.InFlightClientQuestInfoQueries.TryRemove(response.QuestID, out _);
         if (id.Value) // entry is masked
         {
-            GetSession().GameState.NegativeQuestInfoCache.Add(response.QuestID);
+            GetSession().GameState.NegativeQuestInfoCache.TryAdd(response.QuestID, 0);
             response.Allow = false;
             SendPacketToClient(response);
             return;

@@ -253,8 +253,11 @@ public sealed class GameSessionData
     // satisfies all client-side waiters for the same quest). Negative cache tracks
     // quest IDs the legacy server returned masked-entry on — typically TBC/Wrath
     // quests in Questie's DB that the 1.12 server has never heard of.
-    public HashSet<uint> InFlightClientQuestInfoQueries = new();
-    public HashSet<uint> NegativeQuestInfoCache = new();
+    // ConcurrentDictionary (not HashSet) — written from WorldServer handler thread (Add),
+    // WorldClient handler thread (Remove/Add), and the drainer Task thread (Remove).
+    // Plain HashSet under concurrent Add/Remove tears its bucket array.
+    public ConcurrentDictionary<uint, byte> InFlightClientQuestInfoQueries = new();
+    public ConcurrentDictionary<uint, byte> NegativeQuestInfoCache = new();
     // JimsProxy: token-bucket rate limiter for CMSG_QUERY_QUEST_INFO. Questie's
     // cold-start scan bursts ~1500 UNIQUE quest IDs in ~700ms (so in-flight dedupe
     // does nothing on the first pass); this lands at >2000/sec, well past Kronos's

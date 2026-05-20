@@ -41,7 +41,7 @@ public partial class WorldSocket
             return;
         }
 
-        if (state.NegativeQuestInfoCache.Contains(questId))
+        if (state.NegativeQuestInfoCache.ContainsKey(questId))
         {
             QueryQuestInfoResponse negResponse = new QueryQuestInfoResponse();
             negResponse.QuestID = questId;
@@ -51,7 +51,7 @@ public partial class WorldSocket
             return;
         }
 
-        if (!state.InFlightClientQuestInfoQueries.Add(questId))
+        if (!state.InFlightClientQuestInfoQueries.TryAdd(questId, 0))
         {
             Framework.Logging.Log.Event("quest.query.in_flight_drop", new { quest_id = questId });
             return;
@@ -129,13 +129,14 @@ public partial class WorldSocket
                     break;
                 // Cache may have been populated by a parallel proxy-issued query
                 // while this id was waiting; skip a redundant outbound send if so.
-                if (GameData.GetQuestTemplate(questId) != null)
+                QuestTemplate? warmTemplate = GameData.GetQuestTemplate(questId);
+                if (warmTemplate != null)
                 {
-                    state.InFlightClientQuestInfoQueries.Remove(questId);
+                    state.InFlightClientQuestInfoQueries.TryRemove(questId, out _);
                     QueryQuestInfoResponse warm = new QueryQuestInfoResponse();
                     warm.QuestID = questId;
                     warm.Allow = true;
-                    warm.Info = GameData.GetQuestTemplate(questId)!;
+                    warm.Info = warmTemplate;
                     SendPacket(warm);
                     Framework.Logging.Log.Event("quest.query.bucket_drain_cache_hit", new { quest_id = questId });
                     continue;
@@ -155,6 +156,12 @@ public partial class WorldSocket
                     queue_depth = state.PendingQuestQueryQueue.Count,
                 });
             }
+        }
+        catch (System.Exception ex)
+        {
+            // Drainer runs on a fire-and-forget Task; if the session disconnects mid-drain,
+            // SendPacketToServer throws and the exception would otherwise go unobserved.
+            Framework.Logging.Log.Event("quest.query.bucket_drain_error", new { error = ex.ToString() });
         }
         finally
         {
