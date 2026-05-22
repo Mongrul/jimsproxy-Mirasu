@@ -173,21 +173,25 @@ public class WatchdogEvictionTests
     }
 
     [Fact]
-    public void DrainPendingCastsForDestroyedTarget_Match_EvictsOnly()
+    public void DrainPendingCastsForDestroyedTarget_Match_EvictsNotStartedOnly()
     {
         var session = NewSession();
-        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(100, Creature(1), hasStarted: true));
-        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(200, Creature(2)));
-        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(300, Creature(1))); // also targets evicted unit
+        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(100, Creature(1), hasStarted: true)); // started — kept
+        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(200, Creature(2)));                   // other target — kept
+        session.PendingNormalCasts.Enqueue(MakeCastWithTarget(300, Creature(1)));                   // not started, matches — evicted
 
         session.DrainPendingCastsForDestroyedTarget(Creature(1),
             out var normal, out var pet);
 
-        Assert.Equal(2, normal.Count);
-        Assert.Contains(normal, c => c.SpellId == 100);
-        Assert.Contains(normal, c => c.SpellId == 300);
-        Assert.Single(session.PendingNormalCasts);
+        // Only the not-yet-started cast aimed at the destroyed target is evicted.
+        Assert.Single(normal);
+        Assert.Equal(300u, normal[0].SpellId);
         Assert.Empty(pet);
+        // The started cast aimed at the destroyed target stays queued so the
+        // legacy server's real SPELL_GO / SPELL_FAILURE can resolve it.
+        Assert.Equal(2, session.PendingNormalCasts.Count);
+        Assert.Contains(session.PendingNormalCasts, c => c.SpellId == 100);
+        Assert.Contains(session.PendingNormalCasts, c => c.SpellId == 200);
     }
 
     [Fact]
@@ -224,21 +228,25 @@ public class WatchdogEvictionTests
     }
 
     [Fact]
-    public void DrainPendingCastsForDestroyedTarget_HasStartedNormalCast_FalseAfterEviction()
+    public void DrainPendingCastsForDestroyedTarget_StartedCast_KeptForServerResolution()
     {
-        // The end-to-end symptom: cast-time spell on a target, target dies, server
-        // sends only SMSG_SPELL_FAILURE (no trailing CAST_FAILED on Kronos). Without
-        // the destroy hook the entry leaks. With the hook, SMSG_DESTROY_OBJECT for
-        // the target evicts it immediately and HasStartedNormalCast returns false.
+        // Regression guard (gather "node does nothing after the first tick"):
+        // a cast the legacy server has already started must NOT be evicted when
+        // its target is destroyed. The server owns it and sends a real
+        // SMSG_SPELL_GO / SMSG_SPELL_FAILURE; HandleSpellFailure arms the
+        // watchdog as the leak backstop. Evicting it here raced that resolution
+        // and emitted SMSG_CAST_FAILED, which cannot tear down an already-started
+        // cast/channel bar — stranding the modern client until it moved away.
         var session = NewSession();
         var dyingMob = Creature(1);
         session.PendingNormalCasts.Enqueue(MakeCastWithTarget(100, dyingMob, hasStarted: true));
 
+        session.DrainPendingCastsForDestroyedTarget(dyingMob, out var normal, out var pet);
+
+        Assert.Empty(normal);
+        Assert.Empty(pet);
+        Assert.Single(session.PendingNormalCasts);
         Assert.True(session.HasStartedNormalCast());
-
-        session.DrainPendingCastsForDestroyedTarget(dyingMob, out var _, out var _);
-
-        Assert.False(session.HasStartedNormalCast());
     }
 
     // ---- Movement preemption tests ----

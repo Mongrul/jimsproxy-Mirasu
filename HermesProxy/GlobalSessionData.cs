@@ -1261,11 +1261,22 @@ public sealed class GameSessionData
 
     /// <summary>
     /// JimsProxy (PR #161 follow-up — destroy-hook fast path): walks pending
-    /// queues and dequeues any cast whose TargetGuid matches the destroyed
-    /// unit. Returns evicted entries for the caller to emit synthetic
-    /// CastFailed packets with a more accurate reason (BadTargets) than the
-    /// watchdog's DontReport, since we know exactly why the cast can't
-    /// proceed: the target was destroyed.
+    /// queues and dequeues any NOT-YET-STARTED cast whose TargetGuid matches
+    /// the destroyed unit. Returns evicted entries for the caller to emit
+    /// synthetic CastFailed packets with a more accurate reason (BadTargets)
+    /// than the watchdog's DontReport, since we know exactly why the cast
+    /// can't proceed: the target was destroyed.
+    ///
+    /// Casts the legacy server has already started (HasStarted) are deliberately
+    /// left in the queue. The server owns them and sends a real SMSG_SPELL_GO
+    /// or SMSG_SPELL_FAILURE that HandleSpellGo / HandleSpellFailure route to
+    /// the client; HandleSpellFailure also arms the watchdog as a leak backstop.
+    /// Evicting a started cast here is wrong twice over: it races that real
+    /// resolution, and the synthetic SMSG_CAST_FAILED cannot tear down a cast
+    /// the client has already shown a cast/channel bar for — only SMSG_SPELL_FAILURE
+    /// can. That stranded gathering: a queued second mining/herb tick would get
+    /// started, then evicted when the depleted node despawned, leaving a phantom
+    /// channel — the node "did nothing" until the player moved away and back.
     /// </summary>
     public void DrainPendingCastsForDestroyedTarget(WowGuid128 destroyedGuid,
         out List<ClientCastRequest> normalEvicted,
@@ -1279,7 +1290,7 @@ public sealed class GameSessionData
         var keepNormal = new List<ClientCastRequest>();
         while (PendingNormalCasts.TryDequeue(out var cast))
         {
-            if (!cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            if (!cast.HasStarted && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
                 normalEvicted.Add(cast);
             else
                 keepNormal.Add(cast);
@@ -1290,7 +1301,7 @@ public sealed class GameSessionData
         var keepPet = new List<ClientCastRequest>();
         while (PendingPetCasts.TryDequeue(out var cast))
         {
-            if (!cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            if (!cast.HasStarted && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
                 petEvicted.Add(cast);
             else
                 keepPet.Add(cast);
@@ -2178,11 +2189,13 @@ public class GlobalSessionData
 
     /// <summary>
     /// JimsProxy (PR #161 follow-up — destroy-hook fast path): when
-    /// SMSG_DESTROY_OBJECT arrives for a unit, evict any pending casts aimed
-    /// at it. Reason=BadTargets because we know exactly why the cast can't
-    /// proceed (target was destroyed) and the modern client renders the
-    /// correct popup ("Invalid target"). Faster than the 2.5s watchdog —
-    /// fires within ~RTT of the destroy packet.
+    /// SMSG_DESTROY_OBJECT arrives for a unit, evict any not-yet-started
+    /// pending casts aimed at it. Reason=BadTargets because we know exactly
+    /// why the cast can't proceed (target was destroyed) and the modern
+    /// client renders the correct popup ("Invalid target"). Faster than the
+    /// 2.5s watchdog — fires within ~RTT of the destroy packet. Started casts
+    /// are left for the server's real SPELL_GO/SPELL_FAILURE (see
+    /// DrainPendingCastsForDestroyedTarget).
     /// </summary>
     public void EvictPendingCastsForDestroyedTarget(WowGuid128 destroyedGuid)
     {
