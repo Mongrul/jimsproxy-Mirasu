@@ -636,7 +636,7 @@ public partial class WorldClient
                 // and basketball-bounces between flight legs.
                 if (IsHoveringMob(guid))
                 {
-                    moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierSwim | SplineFlagModern.AnimTierHover;
+                    moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierHover;
                     Framework.Logging.Log.Event("hover.spline_stop_override", new
                     {
                         guid = guid.ToString(),
@@ -709,7 +709,7 @@ public partial class WorldClient
             if (IsHoveringMob(guid))
             {
                 moveSpline.SplineFlags &= ~(SplineFlagModern.Unknown5 | SplineFlagModern.Falling | SplineFlagModern.FallingSlow | SplineFlagModern.SmoothGroundPath | SplineFlagModern.CatmullRom);
-                moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierSwim | SplineFlagModern.AnimTierHover;
+                moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierHover;
                 Framework.Logging.Log.Event("hover.spline_override", new
                 {
                     guid = guid.ToString(),
@@ -905,7 +905,7 @@ public partial class WorldClient
 
             // Spline flags + catmull-rom endpoint apply to every taxi spline (first leg
             // and follow-ons alike) so the client renders continuous flight movement.
-            moveSpline.SplineFlags = SplineFlagModern.Flying | SplineFlagModern.AnimTierSwim |
+            moveSpline.SplineFlags = SplineFlagModern.Flying |
                                      SplineFlagModern.CatmullRom |
                                      SplineFlagModern.CanSwim |
                                      SplineFlagModern.UncompressedPath |
