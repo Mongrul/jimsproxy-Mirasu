@@ -42,7 +42,15 @@ public partial class WorldSocket
             packet.WriteUInt32(complaint.Header.SelfPlayerMapId);
             packet.WriteVector3(complaint.Header.SelfPlayerPos);
             packet.WriteCString(ticketText);
-            packet.WriteCString(""); // Not used
+            // MIRASU (Kronos ticket parser 2026-05-23): Kronos's CMSG_GM_TICKET_CREATE
+            // expects a trailing uint32 after the ticket text (likely the
+            // "need_response_from_gm" flag that the TBC+ branch already writes).
+            // The proxy previously wrote an empty cstring here, which is 1 byte
+            // where Kronos wants 4 — the server logged a ByteBufferException on
+            // every ticket submit. vmangos's parser reads `reservedForFutureUse`
+            // as a cstring-until-null; the first zero byte of uint32(0) satisfies
+            // that terminator and the remaining 3 bytes are ignored.
+            packet.WriteUInt32(0);
         }
         else
         {

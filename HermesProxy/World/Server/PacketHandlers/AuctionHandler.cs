@@ -227,6 +227,15 @@ public partial class WorldSocket
         packet.WriteInt32(auction.Quality);
         packet.WriteBool(auction.OnlyUsable);
 
+        // MIRASU (Kronos AH parser 2026-05-23): the 1.12.1 patch added a trailing
+        // uint8 `getAll` flag to CMSG_AUCTION_LIST_ITEMS. Some 1.12 forks (vmangos)
+        // never read it; Kronos's parser does, and threw a ByteBufferException at
+        // "pos N size N value with size: 1" on every query. Write 0 (= don't
+        // request getAll). Older 1.12 builds that don't read the byte leave it as
+        // unread trailing data in the recv buffer.
+        if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+            packet.WriteUInt8(0);
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
             packet.WriteBool(auction.ExactMatch);
