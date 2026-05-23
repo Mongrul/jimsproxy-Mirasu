@@ -38,19 +38,25 @@ public partial class WorldSocket
 
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt8(2); // GMTICKET_BEHAVIOR_HARASSMENT
+            // MIRASU (Kronos ticket parser 2026-05-23 — REVISED): Kronos's
+            // CMSG_GM_TICKET_CREATE handler reads:
+            //   uint32 map; float x; float y; float z;
+            //   cstring ticketText;
+            //   uint32 unk1 (= 0);
+            //   uint32 unk2 (= 1);
+            //   uint32 unk3 (= 0);
+            // No leading category byte. Three trailing uint32s. The prior
+            // shape (uint8 category + cstring "" trailer) was the older
+            // mangos-zero layout; PR #301 corrected the 1-byte trailer to
+            // 4 bytes but the leading category byte still threw the offsets
+            // off by 1, and Kronos wants 3 trailing words not 1. This
+            // matches the parser snippet shared by Kronos directly.
             packet.WriteUInt32(complaint.Header.SelfPlayerMapId);
             packet.WriteVector3(complaint.Header.SelfPlayerPos);
             packet.WriteCString(ticketText);
-            // MIRASU (Kronos ticket parser 2026-05-23): Kronos's CMSG_GM_TICKET_CREATE
-            // expects a trailing uint32 after the ticket text (likely the
-            // "need_response_from_gm" flag that the TBC+ branch already writes).
-            // The proxy previously wrote an empty cstring here, which is 1 byte
-            // where Kronos wants 4 — the server logged a ByteBufferException on
-            // every ticket submit. vmangos's parser reads `reservedForFutureUse`
-            // as a cstring-until-null; the first zero byte of uint32(0) satisfies
-            // that terminator and the remaining 3 bytes are ignored.
-            packet.WriteUInt32(0);
+            packet.WriteUInt32(0); // unk1
+            packet.WriteUInt32(1); // unk2 (server-side comment says expected = 1)
+            packet.WriteUInt32(0); // unk3
         }
         else
         {
