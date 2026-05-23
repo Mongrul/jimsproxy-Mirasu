@@ -39,6 +39,7 @@ public partial class WorldClient
     internal static readonly FrozenDictionary<int, float> M2NativeRatio = new Dictionary<int, float>
     {
         { 411, 2.33f },  // FelBat — 1.12 intrinsic ≈ 2.33× modern's (Ressan-validated)
+        { 1531, 4.0f },  // Mini Diablo (entry 11326, display 10992) — 1.14 mesh shrunk vs 1.12; calibrate from in-game test
     }.ToFrozenDictionary();
 
     // Per-ModelId render-time compensation for divergences invisible to DBC/M2 files.
