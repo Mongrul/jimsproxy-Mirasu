@@ -1518,6 +1518,36 @@ public partial class WorldClient
         return questLog;
     }
 
+    // MIRASU (stack-aura-decrement): build a fresh AuraDataInfo for a stack-only
+    // change. Vanilla servers transmit Lightning Shield charges / Sunder Armor
+    // stacks / Devouring Plague ticks via UNIT_FIELD_AURAAPPLICATIONS only — the
+    // spell ID and flags stay constant. We mirror the cached AuraDataInfo and
+    // recompute Applications via the same offset ReadAuraSlot applies on a full
+    // update so the modern client sees a consistent value.
+    private static AuraDataInfo CloneAuraDataForStackChange(AuraDataInfo src, byte wireApps)
+    {
+        byte appsAdjusted = wireApps;
+        if (GameData.StackableAuras.Contains(src.SpellID))
+            appsAdjusted++;
+        if (appsAdjusted == 0)
+            appsAdjusted = 1;
+
+        return new AuraDataInfo
+        {
+            CastID = src.CastID,
+            SpellID = src.SpellID,
+            SpellXSpellVisualID = src.SpellXSpellVisualID,
+            Flags = src.Flags,
+            ActiveFlags = src.ActiveFlags,
+            CastLevel = src.CastLevel,
+            Applications = appsAdjusted,
+            ContentTuningID = src.ContentTuningID,
+            CastUnit = src.CastUnit,
+            Duration = src.Duration,
+            Remaining = src.Remaining,
+        };
+    }
+
     public AuraDataInfo? ReadAuraSlot(byte i, WowGuid128 guid, Dictionary<int, UpdateField> updates)
     {
         int UNIT_FIELD_AURA = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_AURA);
@@ -2814,31 +2844,67 @@ public partial class WorldClient
                 int aurasCount = LegacyVersion.GetAuraSlotsCount();
                 for (byte i = 0; i < aurasCount; i++)
                 {
-                    // Only process slot i when its specific spell ID changed
-                    // (UNIT_FIELD_AURA is per-slot, one uint32 per aura slot).
-                    // UNIT_FIELD_AURALEVELS and UNIT_FIELD_AURAAPPLICATIONS pack
-                    // 4 slots into one uint32, so their mask fires when ANY of
-                    // the 4 slots in the quad change. Triggering on them caused
-                    // the "warlock recasts one DoT and all 4 visible DoTs refresh
-                    // simultaneously" bug — adjacent slots that didn't actually
-                    // change still got their aura data re-emitted, firing UNIT_AURA
-                    // on the modern client and confusing LibClassicDurations.
-                    // Legitimate per-slot refreshes (recasts) propagate via
-                    // SpellHandler.SendAuraRefreshUpdate from SMSG_SPELL_GO, which
-                    // resolves the slot by SpellID lookup and is slot-targeted.
-                    if (updateMaskArray[UNIT_FIELD_AURA + i])
+                    // Process slot i when EITHER:
+                    //  (a) UNIT_FIELD_AURA + i fires — the slot's spell ID itself changed
+                    //      (apply / refresh / clear). This is per-slot so it's unambiguous.
+                    //  (b) UNIT_FIELD_AURAAPPLICATIONS + i/4 fires AND the per-slot byte
+                    //      within that quad differs from what we last emitted for slot i —
+                    //      a stack count change with no spell-ID change (Lightning Shield
+                    //      charge consumed, Sunder Armor stack added, Devouring Plague tick
+                    //      stacked, etc.).
+                    // The quad mask alone can't gate processing because UNIT_FIELD_AURALEVELS
+                    // and UNIT_FIELD_AURAAPPLICATIONS pack 4 slots into one uint32 — its mask
+                    // fires whenever ANY of those 4 slots in the quad changes. Triggering on
+                    // the quad without per-byte diffing caused the "warlock recasts one DoT
+                    // and all 4 visible DoTs refresh simultaneously" bug — adjacent slots
+                    // that didn't actually change still got re-emitted. We compare against
+                    // the cached AuraDataInfo for this slot so only the slot whose byte
+                    // actually changed re-emits.
+                    bool _maskAura = updateMaskArray[UNIT_FIELD_AURA + i];
+                    bool _maskLevels = updateMaskArray[UNIT_FIELD_AURALEVELS + i / 4];
+                    bool _maskApps = updateMaskArray[UNIT_FIELD_AURAAPPLICATIONS + i / 4];
+
+                    AuraDataInfo? cachedAuraForApps = null;
+                    byte newWireApps = 0;
+                    bool appsOnlyChanged = false;
+                    if (!_maskAura && _maskApps && updates.TryGetValue(UNIT_FIELD_AURAAPPLICATIONS + i / 4, out var _appsQuad))
+                    {
+                        newWireApps = (byte)((_appsQuad.UInt32Value >> ((i % 4) * 8)) & 0xFF);
+                        cachedAuraForApps = GetSession().GameState.GetLastEmittedAura(guid, i);
+                        if (cachedAuraForApps != null)
+                        {
+                            // The cached Applications is post-ReadAuraSlot adjustment:
+                            //   wire + (1 if StackableAuras), then clamped to >=1.
+                            // Reverse the StackableAuras +1 to recover the expected wire byte.
+                            byte expectedWire = cachedAuraForApps.Applications;
+                            if (GameData.StackableAuras.Contains(cachedAuraForApps.SpellID) && expectedWire > 0)
+                                expectedWire = (byte)(expectedWire - 1);
+                            if (newWireApps != expectedWire)
+                                appsOnlyChanged = true;
+                        }
+                    }
+
+                    if (_maskAura || appsOnlyChanged)
                     {
                         // JimsProxy (Rupture-DoT-Lingering-Icon): log every aura-slot touch on units
                         // so we can see the exact packet timing of aura apply/remove vs SPELL_PERIODIC ticks.
                         // Targeting Rupture-on-enemy lingering bug. Remove once root cause is confirmed.
-                        bool _maskAura = updateMaskArray[UNIT_FIELD_AURA + i];
-                        bool _maskLevels = updateMaskArray[UNIT_FIELD_AURALEVELS + i / 4];
-                        bool _maskApps = updateMaskArray[UNIT_FIELD_AURAAPPLICATIONS + i / 4];
                         uint _slotSpellId = (_maskAura && updates.TryGetValue(UNIT_FIELD_AURA + i, out var _auraField)) ? _auraField.UInt32Value : 0;
 
                         AuraInfo aura = new AuraInfo();
                         aura.Slot = i;
-                        aura.AuraData = ReadAuraSlot(i, guid, updates)!;
+                        if (appsOnlyChanged && cachedAuraForApps != null)
+                        {
+                            // Stack count changed without a spell-ID restate — synthesize the
+                            // aura update from the cached AuraDataInfo so flags / CastID / level /
+                            // CastUnit stay intact. Recompute Applications via the same offset
+                            // ReadAuraSlot would apply.
+                            aura.AuraData = CloneAuraDataForStackChange(cachedAuraForApps, newWireApps);
+                        }
+                        else
+                        {
+                            aura.AuraData = ReadAuraSlot(i, guid, updates)!;
+                        }
                         if (aura.AuraData != null)
                         {
                             int durationLeft;
@@ -2923,6 +2989,7 @@ public partial class WorldClient
                             // duration / caster from the previous occupant.
                             GetSession().GameState.ClearAuraDuration(guid, i);
                             GetSession().GameState.ClearAuraCaster(guid, i);
+                            GetSession().GameState.ClearLastEmittedAura(guid, i);
                             Framework.Logging.Log.Event("aura.slot.cleared", new
                             {
                                 target_low = guid.GetCounter(),
@@ -2949,6 +3016,13 @@ public partial class WorldClient
                         {
                             auraUpdate.Auras.Add(aura);
                         }
+
+                        // MIRASU (stack-aura-decrement): remember what we just emitted so the
+                        // next AURAAPPLICATIONS-quad-only update can detect a per-slot byte
+                        // change and re-emit without spuriously refreshing the other three
+                        // slots packed into the same uint32.
+                        if (aura.AuraData != null)
+                            GetSession().GameState.StoreLastEmittedAura(guid, i, aura.AuraData);
 
                         // JimsProxy (vanilla synthesized spell stats): mirror active aura spell
                         // ids for the player so the synthesis pass can walk them alongside

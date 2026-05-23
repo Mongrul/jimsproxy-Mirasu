@@ -460,6 +460,13 @@ public sealed class GameSessionData
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationFull = [];
     public Dictionary<WowGuid128, Dictionary<byte, WowGuid128>> UnitAuraCaster = [];
 
+    // MIRASU (stack-aura-decrement): last AuraDataInfo emitted for each (unit, slot).
+    // Used to detect AURAAPPLICATIONS-quad-only updates where a single slot's app
+    // byte changed (Lightning Shield charge consumed, Sunder Armor stack added,
+    // Devouring Plague tick stacked) and re-emit just that slot without spuriously
+    // refreshing the other three slots packed into the same uint32.
+    public Dictionary<WowGuid128, Dictionary<byte, AuraDataInfo>> UnitAuraLastEmitted = [];
+
     // JimsProxy (Rupture-DoT-Lingering-Icon): combo-point cache + finisher-cast snapshot.
     // Vanilla servers don't send aura duration for enemy debuffs, and CP-scaling finishers
     // (Rupture, Kidney Shot) compute their duration server-side as (base + perCp × CP).
@@ -1039,7 +1046,26 @@ public sealed class GameSessionData
         UnitAuraDurationLeft.Remove(guid);
         UnitAuraDurationFull.Remove(guid);
         UnitAuraCaster.Remove(guid);
+        UnitAuraLastEmitted.Remove(guid);
         return evicted;
+    }
+    public void StoreLastEmittedAura(WowGuid128 guid, byte slot, AuraDataInfo data)
+    {
+        ref var dict = ref CollectionsMarshal.GetValueRefOrAddDefault(UnitAuraLastEmitted, guid, out _);
+        dict ??= [];
+        dict[slot] = data;
+    }
+    public AuraDataInfo? GetLastEmittedAura(WowGuid128 guid, byte slot)
+    {
+        if (UnitAuraLastEmitted.TryGetValue(guid, out var dict) &&
+            dict.TryGetValue(slot, out var data))
+            return data;
+        return null;
+    }
+    public void ClearLastEmittedAura(WowGuid128 guid, byte slot)
+    {
+        if (UnitAuraLastEmitted.TryGetValue(guid, out var dict))
+            dict.Remove(slot);
     }
     public WowGuid128 GetAuraCaster(WowGuid128 target, byte slot)
     {
