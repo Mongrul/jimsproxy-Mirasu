@@ -89,6 +89,22 @@ public partial class WorldSocket
             GetSession().GameState.LastLoopingEmoteId = 0;
         }
 
+        // JimsProxy (wsg-change-transport-dc 2026-05-22): drop CMSG_MOVE_CHANGE_TRANSPORT.
+        // It's a TBC+ opcode with no legacy equivalent, so the opcode==0 fallback below
+        // would mis-forward it as MSG_MOVE_SET_FACING still carrying its OnTransport block —
+        // a "set facing" packet claiming a transport absent on the current map, which
+        // vmangos/Kronos kicks for (the ~8-min WSG "header" disconnect). Safe to drop:
+        // transport state rides in every ordinary movement packet; 1.12 has no such opcode.
+        if (movement.GetUniversalOpcode() == Opcode.CMSG_MOVE_CHANGE_TRANSPORT)
+        {
+            Framework.Logging.Log.Event("movement.change_transport.dropped", new
+            {
+                server_build = Framework.Settings.ServerBuild.ToString(),
+                on_transport = !movement.MoveInfo.TransportGuid.IsEmpty(),
+            });
+            return;
+        }
+
         string opcodeName = movement.GetUniversalOpcode().ToString();
         opcodeName = opcodeName.Replace("CMSG", "MSG");
         uint opcode = Opcodes.GetOpcodeValueForVersion(opcodeName, Framework.Settings.ServerBuild);
