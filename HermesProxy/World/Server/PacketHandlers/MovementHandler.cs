@@ -216,14 +216,27 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_MOVE_WATER_WALK_ACK)]
     void HandleMoveForceAck1(MovementAckMessage movementAck)
     {
-        WorldPacket packet = new WorldPacket(movementAck.GetUniversalOpcode());
+        var universalOpcode = movementAck.GetUniversalOpcode();
+        uint legacyOpcode = LegacyVersion.GetCurrentOpcode(universalOpcode);
+        if (legacyOpcode == 0)
+        {
+            // The modern client acks proxy-synthesized state changes (e.g. the
+            // SMSG_MOVE_UNSET_CAN_FLY sent at the end of a taxi flight) with
+            // CMSG_MOVE_SET_CAN_FLY_ACK, which doesn't exist on Vanilla legacy
+            // servers. The legacy server never sent the change and expects no ack,
+            // so discard it instead of crashing in the WorldPacket(Opcode) assert.
+            Log.Event("movement.ack_discarded", new { opcode = universalOpcode.ToString() });
+            return;
+        }
+
+        WorldPacket packet = new WorldPacket(legacyOpcode);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
             packet.WritePackedGuid(movementAck.MoverGUID.To64());
         else
             packet.WriteGuid(movementAck.MoverGUID.To64());
         packet.WriteUInt32(movementAck.Ack.MoveCounter);
         movementAck.Ack.MoveInfo.WriteMovementInfoLegacy(packet);
-        packet.WriteInt32(movementAck.Ack.MoveInfo.Flags.HasAnyFlag(GetFlagForAckOpcode(movementAck.GetUniversalOpcode())) ? 1 : 0);
+        packet.WriteInt32(movementAck.Ack.MoveInfo.Flags.HasAnyFlag(GetFlagForAckOpcode(universalOpcode)) ? 1 : 0);
         SendPacketToServer(packet);
     }
 
@@ -234,7 +247,21 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_MOVE_GRAVITY_ENABLE_ACK)]
     void HandleMoveForceAck2(MovementAckMessage movementAck)
     {
-        WorldPacket packet = new WorldPacket(movementAck.GetUniversalOpcode());
+        var universalOpcode = movementAck.GetUniversalOpcode();
+        uint legacyOpcode = LegacyVersion.GetCurrentOpcode(universalOpcode);
+        if (legacyOpcode == 0)
+        {
+            // CMSG_MOVE_GRAVITY_ENABLE_ACK / CMSG_MOVE_GRAVITY_DISABLE_ACK don't
+            // exist on Vanilla/TBC legacy servers. The modern client sends them in
+            // response to proxy-synthesized SMSG_MOVE_ENABLE_GRAVITY (e.g. at the
+            // end of a taxi flight). The legacy server never sent a gravity packet
+            // and expects no ack, so discard it instead of crashing in the
+            // WorldPacket(Opcode) constructor's assert.
+            Log.Event("movement.ack_discarded", new { opcode = universalOpcode.ToString() });
+            return;
+        }
+
+        WorldPacket packet = new WorldPacket(legacyOpcode);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
             packet.WritePackedGuid(movementAck.MoverGUID.To64());
         else
