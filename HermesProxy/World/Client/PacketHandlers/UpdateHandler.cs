@@ -1145,6 +1145,20 @@ public partial class WorldClient
 
             moveInfo.WalkSpeed = packet.ReadFloat();
             moveInfo.RunSpeed = packet.ReadFloat();
+            // JimsProxy (speed-stuck-{fear,bg-end}-while-mounted): seed cache + fire BG-end reassert if armed.
+            if (guid == GetSession().GameState.CurrentPlayerGuid && moveInfo.RunSpeed > 0)
+            {
+                GetSession().GameState.LastKnownPlayerRunSpeed = moveInfo.RunSpeed;
+                if (GetSession().GameState.PendingPostTeleportRunSpeedReassert)
+                {
+                    GetSession().GameState.PendingPostTeleportRunSpeedReassert = false;
+                    MoveSetSpeed reassert = new MoveSetSpeed(Opcode.SMSG_MOVE_SET_RUN_SPEED);
+                    reassert.MoverGUID = guid;
+                    reassert.MoveCounter = 0;
+                    reassert.Speed = moveInfo.RunSpeed;
+                    SendPacketToClient(reassert);
+                }
+            }
             moveInfo.RunBackSpeed = packet.ReadFloat();
             moveInfo.SwimSpeed = packet.ReadFloat();
             moveInfo.SwimBackSpeed = packet.ReadFloat();
