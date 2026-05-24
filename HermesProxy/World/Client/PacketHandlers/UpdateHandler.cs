@@ -1067,7 +1067,38 @@ public partial class WorldClient
                 }
             }
 
+            // MIRASU (swim-mob basketball-bounce 2026-05-23): vanilla NPCs in water
+            // carry MovementFlagVanilla.Swimming on their MovementInfo. Modern 1.14 client
+            // wants UNIT_BYTES_1.AnimTier=Swim, spline flags without SmoothGroundPath, and
+            // the modern Swimming bit (0x100000) instead of WotLK's Swimming bit (0x200000)
+            // — otherwise it ground-snaps to the water surface, plays walk anim, and
+            // basketball-bounces (Rotgrip in Maraudon, naga in Desolace). Seed the swim
+            // registry from this flag — same shape as the hover seed above. The actual
+            // flag-bit fixup is in ApplySwimOverrideIfNeeded called below. The detection
+            // checks the WotLK-format flag (post-CastFlags) since info.Flags has already
+            // been normalized to WotLK by ReadMovementInfoLegacy.
+            // MIRASU (swim debug 2026-05-23): restrict to creatures only so that
+            // other players, pets, and tamed mobs aren't permanently flagged as
+            // swimming after a single observation. Hunter pets and other players
+            // legitimately transition between water and land — applying persistent
+            // swim overrides to them would make them visually float on land.
+            // Stationary aquatic creatures (Rotgrip, naga) remain in water so the
+            // one-shot Add is still correct for them.
+            if (((MovementFlagWotLK)moveInfo.Flags).HasAnyFlag(MovementFlagWotLK.Swimming) &&
+                guid.GetHighType() == HighGuidType.Creature)
+            {
+                if (GetSession().GameState.KnownSwimmingMobs.Add(guid))
+                {
+                    Framework.Logging.Log.Event("swim.detect_swimming_flag", new
+                    {
+                        guid = guid.ToString(),
+                        z = moveInfo.Position.Z,
+                    });
+                }
+            }
+
             ApplyHoverOverrideIfNeeded(guid, moveInfo);
+            ApplySwimOverrideIfNeeded(guid, moveInfo);
 
             // JimsProxy (zep-relog-diag 2026-05-15): emit a diagnostic on the
             // player's own UpdateObject only when transport state transitions
@@ -2322,6 +2353,18 @@ public partial class WorldClient
                     updateData.UnitData.Flags = updates[UNIT_FIELD_FLAGS].UInt32Value;
                 }
 
+                // MIRASU (swim animation 2026-05-23): vmangos source confirms
+                // UNIT_FLAG_USE_SWIM_ANIMATION (0x00008000, = UnitFlags.CanSwim)
+                // is THE bit that tells the client to play swim anim — the comment
+                // reads "Without it units walk on the sea floor instead of swimming."
+                // Twinstar / some vanilla servers don't set CREATURE_STATIC_FLAG_CAN_SWIM
+                // on aquatic creatures (Rotgrip, Desolace naga), so this bit never
+                // reaches the modern client and the mob ground-walks underwater.
+                // When we've registered the mob as swimming via MovementFlag.Swimming,
+                // force the bit on so the client picks the swim animation.
+                if (Session.GameState.KnownSwimmingMobs.Contains(guid))
+                    updateData.UnitData.Flags |= (uint)UnitFlags.CanSwim;
+
                 // Here because of this bullshit in cmangos:
                 // https://github.com/cmangos/mangos-tbc/blob/fd093b33071b546545cc5973608304bccc5a041b/src/game/Entities/Object.cpp#L544
                 if (updateData.UnitData.Flags.HasAnyFlag(UnitFlags.ServerControlled) && isCreate &&
@@ -2505,6 +2548,14 @@ public partial class WorldClient
                     updateData.UnitData.AnimTier = 2;
                     if (hoverHeight > 0.0f)
                         updateData.UnitData.HoverHeight = hoverHeight;
+                }
+                // MIRASU (swim-mob basketball-bounce 2026-05-23): mirror the hover synth —
+                // when we've registered this mob as swimming (MovementFlag.Swimming on
+                // its MovementInfo), set AnimTier=Swim so the modern client plays the
+                // swim animation and stops ground-snapping the unit.
+                else if (Session.GameState.KnownSwimmingMobs.Contains(guid))
+                {
+                    updateData.UnitData.AnimTier = 1; // AnimTier.Swim
                 }
             }
             int UNIT_FIELD_PETNUMBER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_PETNUMBER);

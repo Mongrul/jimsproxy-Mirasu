@@ -20,6 +20,13 @@ public partial class WorldClient
         return GetSession().GameState.GetLegacyFieldValueFloat(guid, UnitField.UNIT_FIELD_HOVERHEIGHT) > 0.0f;
     }
 
+    // MIRASU (swim-mob basketball-bounce 2026-05-23): true if we've seen this mob
+    // with MovementFlag.Swimming. Seeded in UpdateHandler.ReadMovementUpdateBlock.
+    private bool IsSwimmingMob(WowGuid128 guid)
+    {
+        return GetSession().GameState.KnownSwimmingMobs.Contains(guid);
+    }
+
     // Strips Falling/FallingFar and forces DisableGravity on a hovering mob's movement
     // flags. Call BEFORE casting WotLK flags to Modern. Vanilla servers don't have
     // AnimTier/HoverHeight in their movement protocol, so hovering mobs bleed Falling
@@ -31,6 +38,38 @@ public partial class WorldClient
             return false;
 
         moveInfo.Flags &= ~(uint)(MovementFlagWotLK.Falling | MovementFlagWotLK.FallingFar);
+        moveInfo.Flags |= (uint)MovementFlagWotLK.DisableGravity;
+        moveInfo.FallTime = 0;
+        moveInfo.JumpVerticalSpeed = 0.0f;
+        moveInfo.JumpHorizontalSpeed = 0.0f;
+        return true;
+    }
+
+    // MIRASU (swim-mob basketball-bounce 2026-05-23): the flag bit positions differ
+    // between WotLK (the proxy's internal storage format after Vanilla→WotLK cast)
+    // and Modern. Specifically:
+    //   WotLK.Swimming      = 0x200000  (bit 21)
+    //   Modern.Swimming     = 0x100000  (bit 20)
+    //   Modern bit 21       = Ascending
+    // The proxy writes info.Flags raw to the modern wire (no name-based conversion),
+    // so a swimming NPC ends up with the modern Ascending flag set — the 1.14 client
+    // then renders it as continuously ascending = visible up/down bouncing on the
+    // water surface with walk anim. This mirrors the workaround the hover override
+    // uses: explicitly strip the wrong bits and set the right modern ones.
+    // Also strip Falling/FallingFar so the client doesn't try to ground-snap.
+    private bool ApplySwimOverrideIfNeeded(WowGuid128 guid, MovementInfo moveInfo)
+    {
+        if (!IsSwimmingMob(guid))
+            return false;
+
+        // Clear WotLK's Swimming bit position (which would show up as Ascending on modern)
+        // and clear falling flags. Set modern Swimming bit (0x100000) directly.
+        moveInfo.Flags &= ~(uint)(MovementFlagWotLK.Swimming | MovementFlagWotLK.Falling | MovementFlagWotLK.FallingFar);
+        moveInfo.Flags |= (uint)MovementFlagModern.Swimming;
+        // MIRASU (swim moving anim 2026-05-23): DisableGravity is the anti-gravity bit
+        // that doesn't force a flight anim (unlike SplineFlagModern.Flying). Pairs with
+        // UnitFlags.CanSwim on UNIT_FIELD_FLAGS so the client renders swim moving anim
+        // instead of bouncing the unit on the water surface.
         moveInfo.Flags |= (uint)MovementFlagWotLK.DisableGravity;
         moveInfo.FallTime = 0;
         moveInfo.JumpVerticalSpeed = 0.0f;
@@ -603,6 +642,19 @@ public partial class WorldClient
                         guid = guid.ToString(),
                     });
                 }
+                // MIRASU (swim-mob basketball-bounce 2026-05-23): same pattern as hover
+                // but for swimming mobs. Without AnimTierSwim on stop, the modern client
+                // reverts to ground anim and ground-snaps Z, causing big up-down hops on
+                // swimming bosses (Rotgrip) and patrolling water mobs.
+                else if (IsSwimmingMob(guid))
+                {
+                    moveSpline.SplineFlags &= ~SplineFlagModern.Flying;
+                    moveSpline.SplineFlags |= SplineFlagModern.AnimTierSwim | SplineFlagModern.CanSwim;
+                    Framework.Logging.Log.Event("swim.spline_stop_override", new
+                    {
+                        guid = guid.ToString(),
+                    });
+                }
                 MonsterMove moveStop = new MonsterMove(guid, moveSpline);
                 SendPacketToClient(moveStop);
                 return;
@@ -659,6 +711,27 @@ public partial class WorldClient
                 moveSpline.SplineFlags &= ~(SplineFlagModern.Unknown5 | SplineFlagModern.Falling | SplineFlagModern.FallingSlow | SplineFlagModern.SmoothGroundPath | SplineFlagModern.CatmullRom);
                 moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierHover;
                 Framework.Logging.Log.Event("hover.spline_override", new
+                {
+                    guid = guid.ToString(),
+                    spline_type = moveSpline.SplineType.ToString(),
+                });
+            }
+            // MIRASU (swim-mob basketball-bounce 2026-05-23): same shape as hover override
+            // but for swimming mobs. Strip ground-snapping / falling flags so the modern
+            // client doesn't yank the mob's Z to ground level each spline tick. Add Flying
+            // (means "moves freely in 3D, don't ground-follow") + AnimTierSwim. Without
+            // Flying, the client still ground-snaps and warps between waypoints because
+            // the smooth-3D path mode isn't enabled.
+            else if (IsSwimmingMob(guid))
+            {
+                moveSpline.SplineFlags &= ~(SplineFlagModern.Unknown5 | SplineFlagModern.Falling | SplineFlagModern.FallingSlow | SplineFlagModern.SmoothGroundPath | SplineFlagModern.Flying);
+                // MIRASU (swim moving anim 2026-05-23): Flying spline flag forced the
+                // client to play flight glide. With UnitFlags.CanSwim now on
+                // UNIT_FIELD_FLAGS (synthesized in UpdateHandler), the client treats
+                // the unit as a swimmer for both physics and anim selection — Flying
+                // is no longer needed and was actually preventing the swim moving anim.
+                moveSpline.SplineFlags |= SplineFlagModern.AnimTierSwim | SplineFlagModern.CanSwim;
+                Framework.Logging.Log.Event("swim.spline_override", new
                 {
                     guid = guid.ToString(),
                     spline_type = moveSpline.SplineType.ToString(),

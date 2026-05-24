@@ -559,6 +559,13 @@ public sealed class GameSessionData
     // packets for it get the hover override regardless of HOVERHEIGHT.
     public HashSet<WowGuid128> KnownHoveringMobs = [];
 
+    // MIRASU (swim-mob basketball-bounce 2026-05-23): mobs we've observed with
+    // MovementFlag.Swimming set (Rotgrip in Maraudon, naga in Desolace, etc.).
+    // Modern 1.14 client expects UNIT_BYTES_1.AnimTier = Swim and spline flags
+    // without SmoothGroundPath for these — vanilla doesn't carry AnimTier so we
+    // synthesize it. Same shape as KnownHoveringMobs above.
+    public HashSet<WowGuid128> KnownSwimmingMobs = [];
+
     // JimsProxy (Tallstrider-Fix): per-GUID last-known facing orientation, populated from
     // any MovementInfo we observe (spawn, heartbeat, ObjectUpdate movement block). Used by
     // MovementHandler.HandleMonsterMove to compare the creature's current facing against
