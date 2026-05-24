@@ -1320,43 +1320,6 @@ public partial class WorldClient
             return;
         }
 
-        // JimsProxy (cannibalize-animation-break): suppress SMSG_SPELL_START for
-        // spell 20577 (Cannibalize wrapper) cast by the local player/pet.
-        // Processing this packet — which carries SpellXSpellVisualID=0 because the
-        // 1.14.2 client's DBC has no SpellXSpellVisual entry for 20577 — corrupts
-        // the modern client's cast-animation dispatcher. Symptom: ALL subsequent
-        // cast-time spells skip the pre-cast build-up animation (cast bar fills,
-        // projectile fires, but the model never plays the casting pose), persists
-        // until /reload. Reproduced on PTR; bundle jimsproxy-20260522-211006.jsonl
-        // captures two repros (Undead rogue + Undead mage), both showing
-        // SPELL_START 20577 visual=0 immediately followed (~0ms) by SPELL_START
-        // 20578 visual=247577 (the real channel).
-        //
-        // 20577 is the action-bar wrapper; the legacy server fires it followed
-        // by SPELL_START 20578 (the real channeled effect, kneeling/eating
-        // visual). 20578 plays Cannibalize's actual animation, so dropping the
-        // wrapper SPELL_START loses nothing visible: SPELL_GO 20577 still
-        // forwards (drives the GCD synth), 20578's START still plays the
-        // kneeling visual, and CAST_FAILED routing is unaffected.
-        //
-        // Whitelist (not a broader "SpellXSpellVisualID==0" guard) because some
-        // 1.14 cast animations are baked into the model and triggered by
-        // SPELL_START regardless of SpellXSpellVisualID. A broad visual==0 guard
-        // would risk regressing Shadowmeld (743) and other racials whose
-        // visual-less SPELL_START currently drives built-in animations. If
-        // another wrapper-channel pair surfaces with the same symptom, add it
-        // here explicitly rather than widening the condition.
-        if (spell.Cast.SpellID == 20577 && (casterIsLocalPlayer || casterIsLocalPet))
-        {
-            Log.Event("spell.start.suppressed_cannibalize_wrapper", new
-            {
-                spell_id = spell.Cast.SpellID,
-                caster_is_player = casterIsLocalPlayer,
-                caster_is_pet = casterIsLocalPet,
-            });
-            return;
-        }
-
         SendPacketToClient(spell);
 
         // JimsProxy HealComm bridge: when local player begins a resurrection
