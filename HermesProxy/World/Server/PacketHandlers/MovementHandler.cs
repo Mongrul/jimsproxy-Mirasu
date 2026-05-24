@@ -178,6 +178,8 @@ public partial class WorldSocket
     void HandleWorldPortResponse(WorldPortResponse teleport)
     {
         GetSession().GameState.IsWaitingForWorldPortAck = false;
+        // JimsProxy (speed-stuck-after-bg-end-while-mounted): arm post-teleport reassert; see memory.
+        GetSession().GameState.PendingPostTeleportRunSpeedReassert = true;
         WorldPacket packet = new WorldPacket(Opcode.MSG_MOVE_WORLDPORT_ACK);
         SendPacketToServer(packet);
     }

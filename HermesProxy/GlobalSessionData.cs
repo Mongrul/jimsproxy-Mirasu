@@ -103,6 +103,10 @@ public sealed class GameSessionData
     // by hardcoding 7.0f. Default true: a player who has never been CC'd is
     // always in control, so the natural login state is "has control already."
     public bool LastObservedHasControl = true;
+    // JimsProxy (speed-stuck-after-fear-while-mounted): cached for reassert; see memory.
+    public float LastKnownPlayerRunSpeed = 7.0f;
+    // JimsProxy (speed-stuck-after-bg-end-while-mounted): deferred reassert flag; see memory.
+    public bool PendingPostTeleportRunSpeedReassert;
     // JimsProxy (taxi-flight-robustness): when set, signals a pending taxi-dismount Task
     // scheduled to fire at TaxiDismountFiresAtTickMs. The CTS is cancelled+disposed on
     // (a) clean session disconnect, (b) early landing CMSG, (c) a fresh taxi spline
