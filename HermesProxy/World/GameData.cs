@@ -2406,6 +2406,11 @@ public static partial class GameData
     public const uint HotfixCreatureDisplayInfoBegin = 270000;
     public const uint HotfixCreatureDisplayInfoExtraBegin = 280000;
     public const uint HotfixCreatureDisplayInfoOptionBegin = 290000;
+    // JimsProxy: per-emulator ItemSparse overlay (currently only kronos) layers
+    // on top of the universal hotfix at startup when Settings.ServerType names
+    // a known emulator. Distinct ID range so it doesn't collide with the
+    // universal HotfixItemSparseBegin block.
+    public const uint HotfixItemSparseEmulatorBegin = 300000;
     public static Dictionary<uint, HotfixRecord> Hotfixes = [];
     public static void LoadHotfixes()
     {
@@ -2426,6 +2431,7 @@ public static partial class GameData
         // Symptom: every SMSG_SPELL_START logs spell_visual_id=0 in spell.cast events,
         // spells render with no visual/sound. Non-deterministic — depends on scheduling.
         LoadItemSparseHotfixes();
+        LoadItemSparseEmulatorHotfixes();
         LoadItemHotfixes();
         LoadItemEffectHotfixes();
         LoadItemDisplayInfoHotfixes();
@@ -2978,7 +2984,37 @@ public static partial class GameData
     public static void LoadItemSparseHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");
+        LoadItemSparseHotfixCsv(path, HotfixItemSparseBegin);
+    }
 
+    // JimsProxy (per-emulator overlay): layered after the universal hotfix so an
+    // emulator-specific drift correction can override or add ItemSparse rows.
+    // Built offline from a server item_template dump. No-op when ServerType=Generic
+    // (no overlay ships for Generic) or when the overlay file isn't present.
+    public static void LoadItemSparseEmulatorHotfixes()
+    {
+        var serverType = Framework.Settings.ServerType;
+        var emulator = serverType.ToString().ToLowerInvariant();
+
+        var path = Path.Combine("CSV", "Hotfix", $"ItemSparse{ModernVersion.ExpansionVersion}.{emulator}.csv");
+        if (!System.IO.File.Exists(path))
+        {
+            // Silent skip for Generic — no overlay ships for it yet. Warn for any
+            // other ServerType (e.g., Kronos) so a missing overlay file surfaces
+            // in startup logs instead of being silently dropped.
+            if (serverType != Framework.ServerFork.Generic)
+                Log.Print(LogType.Server, $"ServerType '{serverType}' set, but overlay file '{path}' not found — skipping.");
+            return;
+        }
+
+        int loadedBefore = Hotfixes.Count;
+        LoadItemSparseHotfixCsv(path, HotfixItemSparseEmulatorBegin);
+        int added = Hotfixes.Count - loadedBefore;
+        Log.Print(LogType.Server, $"Loaded {added} ItemSparse overlay rows for ServerType '{serverType}'.");
+    }
+
+    private static void LoadItemSparseHotfixCsv(string path, uint hotfixIdOffset)
+    {
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -3117,7 +3153,7 @@ public static partial class GameData
             HotfixRecord record = new HotfixRecord();
             record.Status = HotfixStatus.Valid;
             record.TableHash = DB2Hash.ItemSparse;
-            record.HotfixId = HotfixItemSparseBegin + counter;
+            record.HotfixId = hotfixIdOffset + counter;
             record.UniqueId = record.HotfixId;
             record.RecordId = id;
             record.HotfixContent.WriteInt64(allowableRace);
