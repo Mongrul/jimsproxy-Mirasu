@@ -11,6 +11,8 @@ using HermesProxy.Configuration;
 
 namespace Framework;
 
+public enum ServerFork { Kronos, Generic }
+
 public static class Settings
 {
     public static byte[] ClientSeed = null!;
@@ -74,6 +76,10 @@ public static class Settings
     // Default-init to true so tests / paths that bypass LoadAndVerifyFrom get
     // the safe default; LoadAndVerifyFrom still overrides from config below.
     public static bool ThreatEngine = true;
+    // JimsProxy: server fork detection. Different vanilla 1.12 forks (Kronos,
+    // vmangos, Twinstar) have subtly different wire formats for some CMSGs.
+    // Default Kronos since this launcher is built for Kronos.
+    public static ServerFork ServerType = ServerFork.Kronos;
 
     public static bool LoadAndVerifyFrom(ConfigurationParser config)
     {
@@ -106,6 +112,7 @@ public static class Settings
         LowLatencyMode = config.GetBoolean("LowLatencyMode", false);
         SuppressSpellCastErrors = config.GetBoolean("SuppressSpellCastErrors", false);
         ThreatEngine = config.GetBoolean("ThreatEngine", true);
+        ServerType = config.GetEnum("ServerType", ServerFork.Kronos);
         Log.StructuredLogEnabled = StructuredLog;
         Log.VerboseLogEnabled = VerboseLog;
         // Open the JSONL file now so session.start's payload can include the full path.
