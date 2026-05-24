@@ -75,7 +75,7 @@ public static class Settings
     //
     // Default-init to true so tests / paths that bypass LoadAndVerifyFrom get
     // the safe default; LoadAndVerifyFrom still overrides from config below.
-    public static bool ThreatEngine = true;
+    public static bool ThreatEngine = false;
     // JimsProxy: server fork detection. Different vanilla 1.12 forks (Kronos,
     // vmangos, Twinstar) have subtly different wire formats for some CMSGs.
     // Default Kronos since this launcher is built for Kronos.
@@ -111,7 +111,7 @@ public static class Settings
         EnablePallyPowerInterop = config.GetBoolean("EnablePallyPowerInterop", true);
         LowLatencyMode = config.GetBoolean("LowLatencyMode", false);
         SuppressSpellCastErrors = config.GetBoolean("SuppressSpellCastErrors", false);
-        ThreatEngine = config.GetBoolean("ThreatEngine", true);
+        ThreatEngine = config.GetBoolean("ThreatEngine", false);
         ServerType = config.GetEnum("ServerType", ServerFork.Kronos);
         Log.StructuredLogEnabled = StructuredLog;
         Log.VerboseLogEnabled = VerboseLog;
