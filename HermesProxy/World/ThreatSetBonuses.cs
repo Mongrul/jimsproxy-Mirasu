@@ -37,12 +37,12 @@ internal static class ThreatSetBonuses
         var map = new Dictionary<uint, int>();
 
         // Warrior — Battlegear of Might (T1, 8 pieces). Sunder Armor x1.15.
-        foreach (var id in new uint[] { 16866, 16867, 16868, 16869, 16860, 16861, 16862, 16863 })
+        foreach (var id in new uint[] { 16861, 16862, 16863, 16864, 16865, 16866, 16867, 16868 })
             map[id] = SET_WARRIOR_MIGHT;
 
         // Mage — Netherwind Regalia (T2, 8 pieces). Per-spell flat threat
         // reductions on Scorch/Fireball/Frostbolt/Arcane Missiles at 3-set.
-        foreach (var id in new uint[] { 16914, 16917, 16916, 16818, 16915, 16818, 16819, 16920 })
+        foreach (var id in new uint[] { 16818, 16912, 16913, 16914, 16915, 16916, 16917, 16918 })
             map[id] = SET_MAGE_NETHERWIND;
 
         // Mage — Arcanist Regalia (T1, 8 pieces). x0.85 to fire/frost/arcane
@@ -60,9 +60,9 @@ internal static class ThreatSetBonuses
         foreach (var id in new uint[] { 22504, 22505, 22506, 22507, 22508, 22509, 22510, 22511, 23063 })
             map[id] = SET_WARLOCK_PLAGUEHEART;
 
-        // Priest — Vestments of Faith (T3, 8 pieces). x0.9 to heal threat at
-        // 8-set.
-        foreach (var id in new uint[] { 22512, 22513, 22514, 22515, 22516, 22517, 22518, 22519, 23064 })
+        // Priest — Vestments of Faith (T3, 8 pieces + Ring of Faith). x0.9 to
+        // heal threat at 8-set.
+        foreach (var id in new uint[] { 22512, 22513, 22514, 22515, 22516, 22517, 22518, 22519, 23061 })
             map[id] = SET_PRIEST_VESTMENTS_OF_FAITH;
 
         // Rogue — Bonescythe Armor (T3, 8 pieces). x0.92 to Sinister Strike,

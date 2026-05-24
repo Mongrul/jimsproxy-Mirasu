@@ -1,3 +1,4 @@
+using Framework;
 using Framework.Logging;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -484,6 +485,7 @@ public sealed class ThreatTracker
         _threatLists.Clear();
         _lastHighest.Clear();
         _dirty.Clear();
+        _passiveCache.Clear();
     }
 
     // Called from SMSG_CANCEL_COMBAT — the legacy server told the local player
@@ -561,6 +563,7 @@ public sealed class ThreatTracker
 
     public void OnDamage(WowGuid128 attacker, WowGuid128 victim, int spellId, double rawDamage)
     {
+        if (!Settings.ThreatEngine) return;
         if (rawDamage <= 0) return;
         if (!IsRelevantThreater(attacker))
         {
@@ -660,6 +663,7 @@ public sealed class ThreatTracker
     // off-healers who DPS, and self-heals while in combat.
     public void OnHeal(WowGuid128 healer, WowGuid128 healTarget, int spellId, double effectiveHeal)
     {
+        if (!Settings.ThreatEngine) return;
         if (effectiveHeal <= 0) return;
         if (!IsRelevantThreater(healer)) return;
         if (healTarget == default) return;
@@ -785,6 +789,7 @@ public sealed class ThreatTracker
     // math needed proxy-side.
     public void OnEnergize(WowGuid128 caster, WowGuid128 recipient, int spellId, PowerType powerType, double amount)
     {
+        if (!Settings.ThreatEngine) return;
         if (amount <= 0) return;
         if (!IsRelevantThreater(caster)) return;
         if (IsEnergizeExempt(spellId)) return;
@@ -817,6 +822,7 @@ public sealed class ThreatTracker
     // set so the threat-update SMSG goes out alongside the SpellGo packet.
     public void OnSpellCast(WowGuid128 caster, int spellId, IList<WowGuid128> hitTargets)
     {
+        if (!Settings.ThreatEngine) return;
         if (caster == default) return;
 
         // First try player/pet handlers. If matched, flush + return.
@@ -1131,6 +1137,7 @@ public sealed class ThreatTracker
     // uses the table amount instead of effective-heal × 0.5.
     public void OnPowerWordShield(WowGuid128 caster, WowGuid128 shieldTarget, int spellId, double baseAmount)
     {
+        if (!Settings.ThreatEngine) return;
         if (baseAmount <= 0) return;
         if (caster != _session.GameState.CurrentPlayerGuid) return;
         if (shieldTarget == default) return;
