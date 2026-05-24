@@ -112,7 +112,9 @@ public static class Settings
         LowLatencyMode = config.GetBoolean("LowLatencyMode", false);
         SuppressSpellCastErrors = config.GetBoolean("SuppressSpellCastErrors", false);
         ThreatEngine = config.GetBoolean("ThreatEngine", false);
-        ServerType = config.GetEnum("ServerType", ServerFork.Kronos);
+        var serverTypeStr = config.GetString("ServerType", "Kronos");
+        ServerType = serverTypeStr.Equals("Generic", StringComparison.OrdinalIgnoreCase)
+            ? ServerFork.Generic : ServerFork.Kronos;
         Log.StructuredLogEnabled = StructuredLog;
         Log.VerboseLogEnabled = VerboseLog;
         // Open the JSONL file now so session.start's payload can include the full path.
