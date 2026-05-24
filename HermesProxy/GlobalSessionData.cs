@@ -1303,15 +1303,27 @@ public sealed class GameSessionData
     public int MarkStartedCastsMovementCancelled(long watchdogDeadlineMs)
     {
         int marked = 0;
+        long nowTick = Environment.TickCount64;
+        // DIAGNOSTIC (stuck-spell investigation): hoist toggle read; remove with diagnostics
+        bool debugEvents = Framework.Settings.DebugOutput;
         foreach (var cast in PendingNormalCasts)
         {
             if (cast.HasStarted && cast.StartedCastTimeMs > 0
                 && !GameData.IsChanneledSpell(cast.SpellId))
             {
                 cast.MovementCancelled = true;
+                cast.MarkedAtTickMs = nowTick;
                 if (cast.WatchdogDeadlineMs == 0)
                     cast.WatchdogDeadlineMs = watchdogDeadlineMs;
                 marked++;
+                // DIAGNOSTIC (stuck-spell investigation): remove when closed
+                if (debugEvents)
+                    Log.Event("cast.movement_marked", new
+                    {
+                        spell_id = cast.SpellId,
+                        started_cast_time_ms = cast.StartedCastTimeMs,
+                        client_cast_id = cast.ClientGUID.ToString(),
+                    });
             }
         }
         return marked;
@@ -1347,12 +1359,28 @@ public sealed class GameSessionData
         if (destroyedGuid.IsEmpty())
             return;
 
+        // DIAGNOSTIC (stuck-spell investigation): hoist toggle read; remove with diagnostics
+        bool debugEvents = Framework.Settings.DebugOutput;
+
         var keepNormal = new List<ClientCastRequest>();
         while (PendingNormalCasts.TryDequeue(out var cast))
         {
             bool isStartedChannel = cast.HasStarted && GameData.IsChanneledSpell(cast.SpellId);
             if (!isStartedChannel && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            {
                 normalEvicted.Add(cast);
+                // DIAGNOSTIC (stuck-spell investigation): remove when closed
+                if (debugEvents)
+                    Log.Event("cast.destroy_eviction", new
+                    {
+                        queue = "normal",
+                        spell_id = cast.SpellId,
+                        had_started = cast.HasStarted,
+                        is_channeled = GameData.IsChanneledSpell(cast.SpellId),
+                        destroyed_target_low = destroyedGuid.GetCounter(),
+                        client_cast_id = cast.ClientGUID.ToString(),
+                    });
+            }
             else
                 keepNormal.Add(cast);
         }
@@ -1364,7 +1392,20 @@ public sealed class GameSessionData
         {
             bool isStartedChannel = cast.HasStarted && GameData.IsChanneledSpell(cast.SpellId);
             if (!isStartedChannel && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            {
                 petEvicted.Add(cast);
+                // DIAGNOSTIC (stuck-spell investigation): remove when closed
+                if (debugEvents)
+                    Log.Event("cast.destroy_eviction", new
+                    {
+                        queue = "pet",
+                        spell_id = cast.SpellId,
+                        had_started = cast.HasStarted,
+                        is_channeled = GameData.IsChanneledSpell(cast.SpellId),
+                        destroyed_target_low = destroyedGuid.GetCounter(),
+                        client_cast_id = cast.ClientGUID.ToString(),
+                    });
+            }
             else
                 keepPet.Add(cast);
         }
@@ -2153,6 +2194,12 @@ public class ClientCastRequest
     // popup) and the trailing SMSG_CAST_FAILED forwards as DontReport so the
     // client gets its CMSG_CANCEL_CAST ack without a popup.
     public bool MovementCancelled;
+
+    // DIAGNOSTIC (stuck-spell investigation): TickCount64 when MovementCancelled
+    // was set. Used by cast.movement_resolved debug events to measure how long
+    // between proxy-side mark and actual server resolution (CAST_FAILED /
+    // SPELL_FAILURE / watchdog). 0 = never marked. Remove with diagnostics.
+    public long MarkedAtTickMs;
 }
 public class ArenaTeamData
 {
