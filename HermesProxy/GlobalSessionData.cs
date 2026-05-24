@@ -2077,6 +2077,46 @@ public sealed class GameSessionData
         return 0;
     }
 
+    // JimsProxy (issue #305): return player's skill rank for skillLine, 0 if absent; see memory.
+    public ushort GetPlayerSkillRank(uint skillLine)
+    {
+        if (skillLine == 0) return 0;
+        int baseField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
+        if (baseField < 0) return 0;
+        var fields = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (fields == null) return 0;
+        for (int i = 0; i < 128; i++)
+        {
+            int idIdx = baseField + i * 3;
+            if (!fields.TryGetValue(idIdx, out var idField)) continue;
+            ushort id = (ushort)(idField.UInt32Value & 0xFFFF);
+            if (id != skillLine) continue;
+            if (!fields.TryGetValue(idIdx + 1, out var valField)) return 0;
+            ushort rank = (ushort)(valField.UInt32Value & 0xFFFF);
+            ushort perm = 0;
+            if (fields.TryGetValue(idIdx + 2, out var bonusField))
+                perm = (ushort)((bonusField.UInt32Value >> 16) & 0xFFFF);
+            return (ushort)(rank + perm);
+        }
+        return 0;
+    }
+
+    // JimsProxy (issue #305): true if any skill slot is populated; guards pre-UpdateObject race; see memory.
+    public bool HasPopulatedSkillBlock()
+    {
+        int baseField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
+        if (baseField < 0) return false;
+        var fields = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (fields == null) return false;
+        for (int i = 0; i < 128; i++)
+        {
+            int idIdx = baseField + i * 3;
+            if (fields.TryGetValue(idIdx, out var idField) && (idField.UInt32Value & 0xFFFF) != 0)
+                return true;
+        }
+        return false;
+    }
+
     public Dictionary<int, UpdateField>? GetCachedObjectFieldsLegacy(WowGuid128 guid)
     {
         lock (ObjectCacheLock)
