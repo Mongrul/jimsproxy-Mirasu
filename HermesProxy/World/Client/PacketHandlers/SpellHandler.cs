@@ -1320,6 +1320,23 @@ public partial class WorldClient
             return;
         }
 
+        // Cannibalize channel (20578): the 1.12 server triggers this as a
+        // sub-spell of wrapper 20577. No CMSG_CAST_SPELL was sent for 20578,
+        // so the pending-cast queue has no entry — SPELL_START arrives at the
+        // client with an unmapped CastID (no SpellPrepare), corrupting the
+        // animation dispatcher for all subsequent cast-time spells.
+        // Channel functionality is preserved via MSG_CHANNEL_START +
+        // UNIT_CHANNEL_SPELL; SPELL_GO 20577 still drives the GCD synth.
+        if (spell.Cast.SpellID == 20578 && (casterIsLocalPlayer || casterIsLocalPet))
+        {
+            Log.Event("spell.start.suppressed_cannibalize_channel", new
+            {
+                spell_id = spell.Cast.SpellID,
+                spell_visual_id = spell.Cast.SpellXSpellVisualID,
+            });
+            return;
+        }
+
         SendPacketToClient(spell);
 
         // JimsProxy HealComm bridge: when local player begins a resurrection
@@ -1369,6 +1386,20 @@ public partial class WorldClient
             // contents so the next hit gives us bytes to fix the parser.
             LogSpellStartGoParseFailure(packet, e, isSpellGo: true);
             DrainOrphanedStartedNormalCastsOnParseFailure(isSpellGo: true);
+            return;
+        }
+
+        // Cannibalize channel (20578): matching the SPELL_START suppression.
+        // No pending-cast entry exists for 20578, so all dequeue/GCD paths
+        // below are no-ops. GCD is driven by SPELL_GO 20577 (the wrapper).
+        if (spell.Cast.SpellID == 20578 &&
+            (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit ||
+             GetSession().GameState.CurrentPetGuid == spell.Cast.CasterUnit))
+        {
+            Log.Event("spell.go.suppressed_cannibalize_channel", new
+            {
+                spell_id = spell.Cast.SpellID,
+            });
             return;
         }
 
