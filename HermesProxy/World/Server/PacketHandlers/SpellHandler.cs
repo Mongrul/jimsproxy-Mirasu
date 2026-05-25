@@ -512,51 +512,39 @@ public partial class WorldSocket
     }
 
     /// <summary>
-    /// MIRASU (cast-while-moving-out-of-range 2026-05-23): reticle-targeted spells
-    /// (Distract, Goblin Sapper Charge, Iron Grenade, Flare, etc.) fail with
-    /// SpellCastResult.OutOfRange when cast at max range while the player is moving.
-    /// The modern 1.14 CMSG_CAST_SPELL / CMSG_USE_ITEM packets carry a MoveUpdate with
-    /// the client's current position; the legacy 1.12 protocol's CMSG_CAST_SPELL has
-    /// no movement info, so the server uses its last-known position for the
-    /// caster-to-dest range check. Because periodic movement heartbeats run on
-    /// ~500 ms intervals, the legacy server's view of the player position can lag
-    /// ~hundreds of ms behind the client when the cast lands — at max range that's
-    /// enough to fail the range check by a few yards. Native 1.12 clients don't hit
-    /// this because they compute the dest position from the same lagged server-side
-    /// position the engine uses for everything.
+    /// MIRASU (cast-while-moving-out-of-range): casts at long range while the player
+    /// is moving fail with SpellCastResult.OutOfRange because the legacy 1.12
+    /// CMSG_CAST_SPELL has no movement info — the server checks range against its
+    /// last-cached position which trails movement heartbeats by up to ~500ms.
     ///
-    /// Fix: when MoveUpdate is present, fan it out to the legacy server as
-    /// MSG_MOVE_HEARTBEAT first so the server's position view is in sync with
-    /// whatever position the client used to pick the dest. The heartbeat is the
-    /// cheapest movement opcode (no flag transitions, no state-machine effects) so
-    /// it's safe to inject ad-hoc. Channeled spells still get correctly interrupted
-    /// by ongoing movement because the heartbeat carries the moving MovementFlags;
-    /// only the range check benefits.
+    /// PR #299 fixed this for reticle-targeted spells (Distract, Goblin Sapper,
+    /// Iron Grenade, Flare). Issue #314 extends the same fix to unit-targeted
+    /// spells (Fire Blast, Counterspell, etc.) — same root cause, same symptom.
+    ///
+    /// Fix: when MoveUpdate is present, synthesize MSG_MOVE_HEARTBEAT to the legacy
+    /// server before the cast so the server's position view is current. MSG_MOVE_HEARTBEAT
+    /// is the cheapest movement opcode (no flag transitions, no state-machine effects)
+    /// so it's safe to inject ad-hoc — at worst an extra ~2 packets/sec while spam-
+    /// casting on the move, invisible compared to the 60+ pps a busy session sees.
+    /// Channeled spells still get correctly interrupted by ongoing movement because
+    /// the heartbeat carries the moving MovementFlags; only the range check benefits.
+    ///
+    /// For reticle casts at >15 yds, additionally pull the dest 1.5 yds toward the
+    /// player as a safety margin against vmangos's movement anticheat sometimes
+    /// rejecting our synthesized heartbeat. Unit-targeted casts don't have a dest
+    /// to nudge — server resolves the target's position from its own object cache.
     /// </summary>
     private void SyncLegacyServerPositionBeforeCast(SpellCastRequest castRequest, string source)
     {
-        // Gate as tightly as possible — only run for the exact case this fix targets:
-        // reticle (ground-targeted) casts at long range while the player is moving.
-        // Everything else (unit-targeted, self-cast, short-range reticle, standing-
-        // still, no MoveUpdate on the wire) goes through the proxy's existing,
-        // unchanged forwarding path. This avoids touching the normal cast pipeline
-        // and minimizes the surface for any regression on standard player casting.
+        // No sync needed if the client wasn't moving — periodic heartbeats already
+        // keep the server's position view current.
         if (castRequest.MoveUpdate == null)
             return;
-        if (castRequest.Target.DstLocation == null)
-            return;
-
-        var player = castRequest.MoveUpdate.Position;
-        var dest = castRequest.Target.DstLocation.Location;
-        float dx = dest.X - player.X;
-        float dy = dest.Y - player.Y;
-        float dz = dest.Z - player.Z;
-        float distance = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-        if (distance <= 15f)
-            return; // close-range reticle casts (Goblin Sapper at 5 yds, etc.) don't need the fix
 
         try
         {
+            // Always fire the heartbeat sync when MoveUpdate is present. Covers
+            // both reticle casts (PR #299) and unit-targeted casts (issue #314).
             uint heartbeatOpcode = Opcodes.GetOpcodeValueForVersion("MSG_MOVE_HEARTBEAT", Framework.Settings.ServerBuild);
             if (heartbeatOpcode != 0)
             {
@@ -567,38 +555,40 @@ public partial class WorldSocket
                 SendPacketToServer(hb);
             }
 
-            // MIRASU (cast-while-moving-out-of-range 2026-05-23 — phase 2):
-            // The heartbeat sync alone isn't enough at literal max range — vmangos's
-            // movement anticheat (HandleFlagTests / HandlePositionTests) sometimes
-            // rejects our synthesized heartbeat as a suspicious position update, in
-            // which case the cast's range check runs against the older position and
-            // fails. For 1.12 parity (where moving casts at max range Just Work),
-            // pull the dest 1.5 yds toward the player as a safety margin. Sacrifices
-            // ~1.5 yds of effective range — invisible for AoE spells (radius >> 1.5),
-            // small and predictable for precise bombs at long range.
-            const float nudge = 1.5f;
-            float scale = (distance - nudge) / distance;
-            var nudgedDest = new Vector3(
-                player.X + dx * scale,
-                player.Y + dy * scale,
-                player.Z + dz * scale);
-            castRequest.Target.DstLocation.Location = nudgedDest;
+            // Reticle-cast-only dest nudge: only applies when DstLocation is set
+            // (ground-targeted spells) AND we're at long range (>15 yds) where
+            // the anticheat-rejection risk is worth the ~1.5 yd effective-range
+            // sacrifice. Close-range reticle casts (Goblin Sapper at 5 yds) and
+            // unit-targeted casts (no DstLocation) skip the nudge entirely.
+            bool nudged = false;
+            float distance = 0;
+            if (castRequest.Target.DstLocation != null)
+            {
+                var player = castRequest.MoveUpdate.Position;
+                var dest = castRequest.Target.DstLocation.Location;
+                float dx = dest.X - player.X;
+                float dy = dest.Y - player.Y;
+                float dz = dest.Z - player.Z;
+                distance = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (distance > 15f)
+                {
+                    const float nudge = 1.5f;
+                    float scale = (distance - nudge) / distance;
+                    castRequest.Target.DstLocation.Location = new Vector3(
+                        player.X + dx * scale,
+                        player.Y + dy * scale,
+                        player.Z + dz * scale);
+                    nudged = true;
+                }
+            }
 
-            Log.Event("cast.move_sync_for_reticle", new
+            Log.Event("cast.position_sync", new
             {
                 source,
                 spell_id = (uint)castRequest.SpellID,
-                original_dist = distance,
-                nudge_yards = nudge,
-                player_x = player.X,
-                player_y = player.Y,
-                player_z = player.Z,
-                original_dest_x = dest.X,
-                original_dest_y = dest.Y,
-                original_dest_z = dest.Z,
-                nudged_dest_x = nudgedDest.X,
-                nudged_dest_y = nudgedDest.Y,
-                nudged_dest_z = nudgedDest.Z,
+                target_kind = castRequest.Target.DstLocation != null ? "reticle" : "unit",
+                dest_distance = distance,
+                nudged,
             });
         }
         catch
