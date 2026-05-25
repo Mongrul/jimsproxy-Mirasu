@@ -182,25 +182,12 @@ public partial class WorldClient
         // on the riders but separate Pet-high-GUID creature spawns (entry 4196). Without
         // this event, we can't tell whether the legacy server ever sends a destroy for
         // those mount GUIDs around aggro/death time.
-        int cachedEntry = GetSession().GameState.GetLegacyFieldValueInt32(guid, ObjectField.OBJECT_FIELD_ENTRY);
-        int cachedDisplayId = GetSession().GameState.GetLegacyFieldValueInt32(guid, UnitField.UNIT_FIELD_DISPLAYID);
-
         // JimsProxy (target-buffs-stuck-after-render-roundtrip): drop the
         // four per-target aura tables for this guid. Without this, the
         // modern client surfaces stale buffs when the unit re-enters
         // render distance — fresh OBJECT_UPDATE deltas don't reliably
         // overwrite the old slot data before the addon's first read.
-        int aurasEvicted = GetSession().GameState.EvictUnitAuraState(guid);
-
-        Log.Event("object.destroy", new
-        {
-            guid = guid.ToString(),
-            high_type = guid.GetHighType().ToString(),
-            guid_entry = guid.GetEntry(),
-            cached_entry = cachedEntry,
-            cached_display_id = cachedDisplayId,
-            auras_evicted = aurasEvicted,
-        });
+        GetSession().GameState.EvictUnitAuraState(guid);
 
         lock (GetSession().GameState.ObjectCacheLock)
         {
@@ -518,23 +505,6 @@ public partial class WorldClient
             if (guid == GetSession().GameState.CurrentPlayerGuid)
                 continue;
             PrintString($"Guid = {objCount}", index, j);
-
-            // JimsProxy (mount-and-quest-diagnostics): per-GUID structured log for far/
-            // out-of-range removals, captured BEFORE cache eviction so cached entry and
-            // displayId survive into the bundle. Pairs with object.destroy to give a
-            // complete picture of how the legacy server removes objects from the client's
-            // view — needed to triage the Outrunner cat-mount persistence bug where the
-            // mount cats are independent creature spawns (entry 4196), not MOUNTDISPLAYID.
-            int cachedEntry = GetSession().GameState.GetLegacyFieldValueInt32(guid, ObjectField.OBJECT_FIELD_ENTRY);
-            int cachedDisplayId = GetSession().GameState.GetLegacyFieldValueInt32(guid, UnitField.UNIT_FIELD_DISPLAYID);
-            Log.Event("object.far_object", new
-            {
-                guid = guid.ToString(),
-                high_type = guid.GetHighType().ToString(),
-                guid_entry = guid.GetEntry(),
-                cached_entry = cachedEntry,
-                cached_display_id = cachedDisplayId,
-            });
 
             lock (GetSession().GameState.ObjectCacheLock)
             {
@@ -3593,17 +3563,13 @@ public partial class WorldClient
                     }
                 }
             }
-            bool spellStatsDirty = false;
             int PLAYER_FIELD_MOD_DAMAGE_DONE_POS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_DAMAGE_DONE_POS);
             if (PLAYER_FIELD_MOD_DAMAGE_DONE_POS >= 0)
             {
                 for (int i = 0; i < 7; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_POS + i])
-                    {
                         updateData.ActivePlayerData.ModDamageDonePos[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_POS + i].Int32Value;
-                        spellStatsDirty = true;
-                    }
                 }
             }
             int PLAYER_FIELD_MOD_DAMAGE_DONE_NEG = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_DAMAGE_DONE_NEG);
@@ -3612,10 +3578,7 @@ public partial class WorldClient
                 for (int i = 0; i < 7; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + i])
-                    {
                         updateData.ActivePlayerData.ModDamageDoneNeg[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + i].Int32Value;
-                        spellStatsDirty = true;
-                    }
                 }
             }
             int PLAYER_FIELD_MOD_DAMAGE_DONE_PCT = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_DAMAGE_DONE_PCT);
@@ -3624,37 +3587,12 @@ public partial class WorldClient
                 for (int i = 0; i < 7; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + i])
-                    {
                         updateData.ActivePlayerData.ModDamageDonePercent[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + i].FloatValue;
-                        spellStatsDirty = true;
-                    }
                 }
             }
             int PLAYER_FIELD_MOD_HEALING_DONE_POS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_HEALING_DONE_POS);
             if (PLAYER_FIELD_MOD_HEALING_DONE_POS >= 0 && updateMaskArray[PLAYER_FIELD_MOD_HEALING_DONE_POS])
-            {
                 updateData.ActivePlayerData.ModHealingDonePos = updates[PLAYER_FIELD_MOD_HEALING_DONE_POS].Int32Value;
-                spellStatsDirty = true;
-            }
-            // JimsProxy diagnostic: snapshot the spell-power/healing fields whenever the legacy
-            // server pushes any of them. Lets us see what Kronos is actually sending — vanilla
-            // 1.12 protocol has no PLAYER_FIELD_MOD_HEALING_DONE_POS field at all (the field
-            // jumps from MOD_DAMAGE_DONE_PCT[6] straight to PLAYER_FIELD_BYTES), so Spell Healing
-            // on the modern client will always show 0 unless the proxy synthesizes it. The
-            // ModDamageDonePos values are present in vanilla but may or may not be pushed by
-            // Kronos at login. School order: 0=Physical, 1=Holy, 2=Fire, 3=Nature, 4=Frost,
-            // 5=Shadow, 6=Arcane.
-            if (spellStatsDirty)
-            {
-                Log.Event("stats.spell_power.update", new
-                {
-                    pos = updateData.ActivePlayerData.ModDamageDonePos,
-                    neg = updateData.ActivePlayerData.ModDamageDoneNeg,
-                    pct = updateData.ActivePlayerData.ModDamageDonePercent,
-                    healing_pos = updateData.ActivePlayerData.ModHealingDonePos,
-                    has_healing_field = PLAYER_FIELD_MOD_HEALING_DONE_POS >= 0,
-                });
-            }
 
             // JimsProxy: synthesize Spell Healing and per-school Spell Damage from equipment-
             // triggered passive auras for vanilla. The vanilla 1.12 protocol has no
@@ -3684,13 +3622,6 @@ public partial class WorldClient
                         updateData.ActivePlayerData.ModDamageDonePos[i] = damageDone[i];
                 }
 
-                Log.Event("stats.spell_power.synthesized", new
-                {
-                    healing_done = healingDone,
-                    damage_done = damageDone,
-                    equipped_item_count = GetSession().GameState.CurrentEquippedItemIds.Count(id => id > 0),
-                });
-
                 // JimsProxy (vanilla synthesized spell crit): vanilla 1.12 has no
                 // PLAYER_SPELL_CRIT_PERCENTAGE1 field. Compute base + INT/rate + aura
                 // contributions per school and override the modern client's per-school
@@ -3706,61 +3637,6 @@ public partial class WorldClient
                     GetSession().GameState.CurrentPlayerKnownSpells);
                 for (int i = 0; i < 7; i++)
                     updateData.ActivePlayerData.SpellCritPercentage[i] = critByschool[i];
-
-                // Drill-down: which specific spells contributed crit, so we can see
-                // whether the gap to vanilla's reference is a missing input vs a
-                // formula bug. Filter SpellAuraEffects to crit-only entries (auras
-                // 57/71) and report any such spell we found in equipment, auras, or
-                // spellbook with its base points and (for school-masked) the schools
-                // it touches.
-                var critContribs = new System.Collections.Generic.List<object>();
-                void AddIfCrit(uint sid, string source)
-                {
-                    if (!GameData.SpellAuraEffects.TryGetValue(sid, out var effects))
-                        return;
-                    foreach (var eff in effects)
-                    {
-                        if (eff.AuraType == 57 || eff.AuraType == 71)
-                        {
-                            critContribs.Add(new
-                            {
-                                spell_id = sid,
-                                source,
-                                aura = (int)eff.AuraType,
-                                base_points = eff.BasePoints,
-                                misc_value = eff.MiscValue,
-                            });
-                        }
-                    }
-                }
-                foreach (var sid in GetSession().GameState.CurrentPlayerKnownSpells)
-                    AddIfCrit(sid, "spellbook");
-                foreach (var sid in GetSession().GameState.CurrentPlayerAuraSpellIds)
-                {
-                    if (sid != 0)
-                        AddIfCrit(sid, "active_aura");
-                }
-                foreach (int itemId in GetSession().GameState.CurrentEquippedItemIds)
-                {
-                    if (itemId <= 0) continue;
-                    var tmpl = GameData.GetItemTemplate((uint)itemId);
-                    if (tmpl == null) continue;
-                    for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
-                    {
-                        if (tmpl.TriggeredSpellIds[t] > 0 && tmpl.TriggeredSpellTypes[t] == 1)
-                            AddIfCrit((uint)tmpl.TriggeredSpellIds[t], $"item:{itemId}");
-                    }
-                }
-
-                Log.Event("stats.spell_crit.synthesized", new
-                {
-                    player_class = GetSession().GameState.CurrentPlayerClass,
-                    player_level = GetSession().GameState.CurrentPlayerLevel,
-                    player_intellect = GetSession().GameState.CurrentPlayerIntellect,
-                    crit_per_school = critByschool,
-                    known_spell_count = GetSession().GameState.CurrentPlayerKnownSpells.Count,
-                    crit_contributions = critContribs,
-                });
 
                 // JimsProxy: synthesize melee/ranged Hit Chance. Vanilla 1.12 has no
                 // UiHitModifier-equivalent field — Kronos can't push a value the modern
@@ -3785,71 +3661,6 @@ public partial class WorldClient
                 // and stays a flat %.
                 const float SPELL_HIT_RATING_PER_PCT_L60 = 7.0f;
                 updateData.ActivePlayerData.UiSpellHitModifier = spellHitMod * SPELL_HIT_RATING_PER_PCT_L60;
-
-                // Drill-down: which spells contributed (aura 54 melee/ranged hit, 55 spell
-                // hit). Also surface every aura *effect* on the player's spell IDs so we can
-                // see whether a talent uses aura 107 SPELLMOD (client computes itself, not
-                // here) or some other type we haven't wired up.
-                var hitContribs = new System.Collections.Generic.List<object>();
-                var spellHitContribs = new System.Collections.Generic.List<object>();
-                var unmappedAuras = new System.Collections.Generic.List<object>();
-                void AddContribsForSpell(uint sid, string source)
-                {
-                    if (!GameData.SpellAuraEffects.TryGetValue(sid, out var effects))
-                        return;
-                    foreach (var eff in effects)
-                    {
-                        if (eff.AuraType == 54)
-                        {
-                            hitContribs.Add(new { spell_id = sid, source, base_points = eff.BasePoints });
-                        }
-                        else if (eff.AuraType == 55)
-                        {
-                            spellHitContribs.Add(new { spell_id = sid, source, base_points = eff.BasePoints });
-                        }
-                        else if (eff.AuraType == 107 && (eff.MiscValue == 16 || eff.MiscValue == 24))
-                        {
-                            // SPELLMOD with miscValue 16 (HIT_CHANCE) or 24 (RESIST_MISS_CHANCE)
-                            // — these are talent spell-hit modifiers (Mage Elemental Precision,
-                            // Lightning Mastery etc.). Modern client computes them itself.
-                            unmappedAuras.Add(new { spell_id = sid, source, aura = (int)eff.AuraType, base_points = eff.BasePoints, misc_value = eff.MiscValue });
-                        }
-                    }
-                }
-                foreach (var sid in GetSession().GameState.CurrentPlayerKnownSpells)
-                    AddContribsForSpell(sid, "spellbook");
-                foreach (var sid in GetSession().GameState.CurrentPlayerAuraSpellIds)
-                {
-                    if (sid != 0)
-                        AddContribsForSpell(sid, "active_aura");
-                }
-                foreach (int itemId in GetSession().GameState.CurrentEquippedItemIds)
-                {
-                    if (itemId <= 0) continue;
-                    var tmpl = GameData.GetItemTemplate((uint)itemId);
-                    if (tmpl == null) continue;
-                    for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
-                    {
-                        if (tmpl.TriggeredSpellIds[t] > 0 && tmpl.TriggeredSpellTypes[t] == 1)
-                            AddContribsForSpell((uint)tmpl.TriggeredSpellIds[t], $"item:{itemId}");
-                    }
-                }
-
-                int rangedItemId = 0;
-                if (GetSession().GameState.CurrentEquippedItemIds.Length > 18)
-                    rangedItemId = GetSession().GameState.CurrentEquippedItemIds[18];
-                Log.Event("stats.ranged.snapshot", new
-                {
-                    player_class = GetSession().GameState.CurrentPlayerClass,
-                    ranged_crit_percentage = updateData.ActivePlayerData.RangedCritPercentage,
-                    ui_hit_modifier_synth = hitMod,
-                    ui_spell_hit_modifier_synth = spellHitMod,
-                    hit_contributions = hitContribs,
-                    spell_hit_contributions = spellHitContribs,
-                    spellmod_hit_auras = unmappedAuras,
-                    ranged_attack_power = updateData.UnitData.RangedAttackPower,
-                    ranged_slot_item_id = rangedItemId,
-                });
             }
             int PLAYER_FIELD_MOD_TARGET_RESISTANCE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_TARGET_RESISTANCE);
             if (PLAYER_FIELD_MOD_TARGET_RESISTANCE >= 0 && updateMaskArray[PLAYER_FIELD_MOD_TARGET_RESISTANCE])
