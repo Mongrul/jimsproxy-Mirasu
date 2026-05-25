@@ -571,8 +571,16 @@ public sealed class HealCommBridge
         int delayMs = castTimeMs + (int)NaturalCompletionTolerance.TotalMilliseconds;
         Task.Delay(delayMs).ContinueWith(_ =>
         {
-            if (_synthCastsByCaster.TryGetValue(senderGuid, out var synth) && synth.CastId == castId)
-                DismissSynth(senderGuid, "natural_completion_timeout");
+            // Swallow: fire-and-forget timer; DismissSynth can throw if the
+            // world connection dropped between the lookup and SendPacketToClient.
+            // Without the catch, the exception becomes an unobserved task
+            // exception on the timer thread.
+            try
+            {
+                if (_synthCastsByCaster.TryGetValue(senderGuid, out var synth) && synth.CastId == castId)
+                    DismissSynth(senderGuid, "natural_completion_timeout");
+            }
+            catch { }
         }, TaskScheduler.Default);
     }
 
