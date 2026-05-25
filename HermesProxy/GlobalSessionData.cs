@@ -103,6 +103,10 @@ public sealed class GameSessionData
     // by hardcoding 7.0f. Default true: a player who has never been CC'd is
     // always in control, so the natural login state is "has control already."
     public bool LastObservedHasControl = true;
+    // JimsProxy (speed-stuck-after-fear-while-mounted): cached for reassert; see memory.
+    public float LastKnownPlayerRunSpeed = 7.0f;
+    // JimsProxy (speed-stuck-after-bg-end-while-mounted): deferred reassert flag; see memory.
+    public bool PendingPostTeleportRunSpeedReassert;
     // JimsProxy (taxi-flight-robustness): when set, signals a pending taxi-dismount Task
     // scheduled to fire at TaxiDismountFiresAtTickMs. The CTS is cancelled+disposed on
     // (a) clean session disconnect, (b) early landing CMSG, (c) a fresh taxi spline
@@ -1331,24 +1335,31 @@ public sealed class GameSessionData
 
     /// <summary>
     /// JimsProxy (PR #161 follow-up — destroy-hook fast path): walks pending
-    /// queues and dequeues any cast whose TargetGuid matches the destroyed
-    /// unit, except started channels (see below). Returns evicted entries
-    /// for the caller to emit synthetic CastFailed packets with a more
-    /// accurate reason (BadTargets) than the watchdog's DontReport, since
-    /// we know exactly why the cast can't proceed: the target was destroyed.
+    /// queues and dequeues any !HasStarted cast whose TargetGuid matches the
+    /// destroyed unit. Returns evicted entries for the caller to emit synthetic
+    /// CastFailed packets with a more accurate reason (BadTargets) than the
+    /// watchdog's DontReport, since we know exactly why the cast can't proceed:
+    /// the target was destroyed.
     ///
-    /// Started CHANNELS specifically are left in the queue. The legacy server
-    /// owns the channel — it sends a real SMSG_SPELL_FAILURE that
-    /// HandleSpellFailure routes to the client and arms the watchdog as a
-    /// leak backstop. Evicting a started channel here is wrong twice over:
-    /// it races that real resolution, and synthetic SMSG_CAST_FAILED cannot
-    /// tear down a channel bar — only SMSG_SPELL_FAILURE can. That stranded
-    /// gathering: a queued second mining/herb tick would get started by the
-    /// server, then evicted when the depleted node despawned, leaving a
-    /// phantom channel — the node "did nothing" until the player moved away
-    /// and back. Started non-channeled casts (Frostbolt etc.) still get
-    /// evicted so the instant BadTargets feedback is preserved for normal
-    /// combat-on-dying-mob.
+    /// Started casts (HasStarted=true) are intentionally LEFT in the queue.
+    /// The legacy server owns them — it sends a real SMSG_SPELL_GO or
+    /// SMSG_SPELL_FAILURE whose CastID/reason the proxy routes back to the
+    /// client. Evicting a started cast here races that resolution and produces
+    /// the wrong outcome:
+    ///
+    ///   - Channels (mining, herbalism, Drain Soul): a queued second tick gets
+    ///     started by the server, then evicted when the depleted node despawns,
+    ///     leaving a phantom channel — the node "did nothing" until the player
+    ///     moves away and back. Synthetic SMSG_CAST_FAILED cannot tear down a
+    ///     channel bar; only SMSG_SPELL_FAILURE can.
+    ///   - Cast-time spells (Frostbolt etc.) mid-cast on a dying mob: the
+    ///     server will send SMSG_SPELL_FAILURE → SMSG_CAST_FAILED. Evicting
+    ///     here races those packets and corrupts queue alignment for later
+    ///     same-spell presses (the burst-flood scenario seen in May 2026 logs).
+    ///
+    /// Trade: BadTargets feedback for combat-on-dying-mob is now driven by the
+    /// server response (~RTT-bound) instead of the instant client-side synthesis.
+    /// Worth it to eliminate the preemptive-removal-of-started-cast class of bugs.
     /// </summary>
     public void DrainPendingCastsForDestroyedTarget(WowGuid128 destroyedGuid,
         out List<ClientCastRequest> normalEvicted,
@@ -1365,8 +1376,7 @@ public sealed class GameSessionData
         var keepNormal = new List<ClientCastRequest>();
         while (PendingNormalCasts.TryDequeue(out var cast))
         {
-            bool isStartedChannel = cast.HasStarted && GameData.IsChanneledSpell(cast.SpellId);
-            if (!isStartedChannel && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            if (!cast.HasStarted && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
             {
                 normalEvicted.Add(cast);
                 // DIAGNOSTIC (stuck-spell investigation): remove when closed
@@ -1390,8 +1400,7 @@ public sealed class GameSessionData
         var keepPet = new List<ClientCastRequest>();
         while (PendingPetCasts.TryDequeue(out var cast))
         {
-            bool isStartedChannel = cast.HasStarted && GameData.IsChanneledSpell(cast.SpellId);
-            if (!isStartedChannel && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
+            if (!cast.HasStarted && !cast.TargetGuid.IsEmpty() && cast.TargetGuid == destroyedGuid)
             {
                 petEvicted.Add(cast);
                 // DIAGNOSTIC (stuck-spell investigation): remove when closed
@@ -2116,6 +2125,46 @@ public sealed class GameSessionData
             return value.FloatValue;
 
         return 0;
+    }
+
+    // JimsProxy (issue #305): return player's skill rank for skillLine, 0 if absent; see memory.
+    public ushort GetPlayerSkillRank(uint skillLine)
+    {
+        if (skillLine == 0) return 0;
+        int baseField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
+        if (baseField < 0) return 0;
+        var fields = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (fields == null) return 0;
+        for (int i = 0; i < 128; i++)
+        {
+            int idIdx = baseField + i * 3;
+            if (!fields.TryGetValue(idIdx, out var idField)) continue;
+            ushort id = (ushort)(idField.UInt32Value & 0xFFFF);
+            if (id != skillLine) continue;
+            if (!fields.TryGetValue(idIdx + 1, out var valField)) return 0;
+            ushort rank = (ushort)(valField.UInt32Value & 0xFFFF);
+            ushort perm = 0;
+            if (fields.TryGetValue(idIdx + 2, out var bonusField))
+                perm = (ushort)((bonusField.UInt32Value >> 16) & 0xFFFF);
+            return (ushort)(rank + perm);
+        }
+        return 0;
+    }
+
+    // JimsProxy (issue #305): true if any skill slot is populated; guards pre-UpdateObject race; see memory.
+    public bool HasPopulatedSkillBlock()
+    {
+        int baseField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
+        if (baseField < 0) return false;
+        var fields = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (fields == null) return false;
+        for (int i = 0; i < 128; i++)
+        {
+            int idIdx = baseField + i * 3;
+            if (fields.TryGetValue(idIdx, out var idField) && (idField.UInt32Value & 0xFFFF) != 0)
+                return true;
+        }
+        return false;
     }
 
     public Dictionary<int, UpdateField>? GetCachedObjectFieldsLegacy(WowGuid128 guid)

@@ -181,6 +181,8 @@ public partial class WorldSocket
         // the same spell that's leaked, which is unintuitive and looks like a freeze.
         GetSession().RunWatchdogEviction();
 
+        SyncLegacyServerPositionBeforeCast(cast.Cast, source: "spell_cast");
+
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
             GetSession().GameState.LastDispellSpellId = (uint)cast.Cast.SpellID;
 
@@ -510,6 +512,101 @@ public partial class WorldSocket
     }
 
     /// <summary>
+    /// MIRASU (cast-while-moving-out-of-range 2026-05-23): reticle-targeted spells
+    /// (Distract, Goblin Sapper Charge, Iron Grenade, Flare, etc.) fail with
+    /// SpellCastResult.OutOfRange when cast at max range while the player is moving.
+    /// The modern 1.14 CMSG_CAST_SPELL / CMSG_USE_ITEM packets carry a MoveUpdate with
+    /// the client's current position; the legacy 1.12 protocol's CMSG_CAST_SPELL has
+    /// no movement info, so the server uses its last-known position for the
+    /// caster-to-dest range check. Because periodic movement heartbeats run on
+    /// ~500 ms intervals, the legacy server's view of the player position can lag
+    /// ~hundreds of ms behind the client when the cast lands — at max range that's
+    /// enough to fail the range check by a few yards. Native 1.12 clients don't hit
+    /// this because they compute the dest position from the same lagged server-side
+    /// position the engine uses for everything.
+    ///
+    /// Fix: when MoveUpdate is present, fan it out to the legacy server as
+    /// MSG_MOVE_HEARTBEAT first so the server's position view is in sync with
+    /// whatever position the client used to pick the dest. The heartbeat is the
+    /// cheapest movement opcode (no flag transitions, no state-machine effects) so
+    /// it's safe to inject ad-hoc. Channeled spells still get correctly interrupted
+    /// by ongoing movement because the heartbeat carries the moving MovementFlags;
+    /// only the range check benefits.
+    /// </summary>
+    private void SyncLegacyServerPositionBeforeCast(SpellCastRequest castRequest, string source)
+    {
+        // Gate as tightly as possible — only run for the exact case this fix targets:
+        // reticle (ground-targeted) casts at long range while the player is moving.
+        // Everything else (unit-targeted, self-cast, short-range reticle, standing-
+        // still, no MoveUpdate on the wire) goes through the proxy's existing,
+        // unchanged forwarding path. This avoids touching the normal cast pipeline
+        // and minimizes the surface for any regression on standard player casting.
+        if (castRequest.MoveUpdate == null)
+            return;
+        if (castRequest.Target.DstLocation == null)
+            return;
+
+        var player = castRequest.MoveUpdate.Position;
+        var dest = castRequest.Target.DstLocation.Location;
+        float dx = dest.X - player.X;
+        float dy = dest.Y - player.Y;
+        float dz = dest.Z - player.Z;
+        float distance = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance <= 15f)
+            return; // close-range reticle casts (Goblin Sapper at 5 yds, etc.) don't need the fix
+
+        try
+        {
+            uint heartbeatOpcode = Opcodes.GetOpcodeValueForVersion("MSG_MOVE_HEARTBEAT", Framework.Settings.ServerBuild);
+            if (heartbeatOpcode != 0)
+            {
+                WorldPacket hb = new WorldPacket(heartbeatOpcode);
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
+                    hb.WritePackedGuid(castRequest.MoverGUID.To64());
+                castRequest.MoveUpdate.WriteMovementInfoLegacy(hb);
+                SendPacketToServer(hb);
+            }
+
+            // MIRASU (cast-while-moving-out-of-range 2026-05-23 — phase 2):
+            // The heartbeat sync alone isn't enough at literal max range — vmangos's
+            // movement anticheat (HandleFlagTests / HandlePositionTests) sometimes
+            // rejects our synthesized heartbeat as a suspicious position update, in
+            // which case the cast's range check runs against the older position and
+            // fails. For 1.12 parity (where moving casts at max range Just Work),
+            // pull the dest 1.5 yds toward the player as a safety margin. Sacrifices
+            // ~1.5 yds of effective range — invisible for AoE spells (radius >> 1.5),
+            // small and predictable for precise bombs at long range.
+            const float nudge = 1.5f;
+            float scale = (distance - nudge) / distance;
+            var nudgedDest = new Vector3(
+                player.X + dx * scale,
+                player.Y + dy * scale,
+                player.Z + dz * scale);
+            castRequest.Target.DstLocation.Location = nudgedDest;
+
+            Log.Event("cast.move_sync_for_reticle", new
+            {
+                source,
+                spell_id = (uint)castRequest.SpellID,
+                original_dist = distance,
+                nudge_yards = nudge,
+                player_x = player.X,
+                player_y = player.Y,
+                player_z = player.Z,
+                original_dest_x = dest.X,
+                original_dest_y = dest.Y,
+                original_dest_z = dest.Z,
+                nudged_dest_x = nudgedDest.X,
+                nudged_dest_y = nudgedDest.Y,
+                nudged_dest_z = nudgedDest.Z,
+            });
+        }
+        catch
+        {
+            // Best-effort sync; never block a legitimate cast over a position-sync failure.
+        }
+    }
+
     /// JimsProxy (issue #43): build the outbound CMSG_CAST_SPELL wire packet from a CastSpell.
     /// Extracted so the GCD hold path can construct the packet up front and the timer callback
     /// can send it verbatim when the GCD expires.
@@ -668,6 +765,11 @@ public partial class WorldSocket
                 source = "item",
             });
         GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+
+        // MIRASU (cast-while-moving-out-of-range 2026-05-23): sync server position
+        // for reticle-targeted item uses (bombs, sapper charge, grenades). See
+        // SyncLegacyServerPositionBeforeCast docs for the full explanation.
+        SyncLegacyServerPositionBeforeCast(use.Cast, source: "use_item");
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_USE_ITEM);
         byte containerSlot = use.PackSlot != Enums.Classic.InventorySlots.Bag0 ? ModernVersion.AdjustInventorySlot(use.PackSlot) : use.PackSlot;

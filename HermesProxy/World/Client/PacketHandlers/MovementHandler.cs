@@ -197,10 +197,11 @@ public partial class WorldClient
 
         if (isLocalPlayer && justRegainedControl)
         {
+            // JimsProxy (speed-stuck-after-fear-while-mounted): reassert cached speed, not 7.0f; see memory.
             MoveSetSpeed runFix = new MoveSetSpeed(Opcode.SMSG_MOVE_SET_RUN_SPEED);
             runFix.MoverGUID = control.Guid;
             runFix.MoveCounter = 0;
-            runFix.Speed = 7.0f; // Default WoW running speed
+            runFix.Speed = GetSession().GameState.LastKnownPlayerRunSpeed;
             SendPacketToClient(runFix);
         }
     }
@@ -318,6 +319,33 @@ public partial class WorldClient
         {
             GetSession().GameState.IsWaitingForNewWorld = false;
             GetSession().GameState.IsWaitingForWorldPortAck = true;
+
+            // JimsProxy (zone-transfer cast-state cleanup): the source map's server
+            // state is torn down on transition (BG entry, instance change, zep arrival,
+            // GM teleport). Any CMSG_CAST_SPELL we forwarded just before NEW_WORLD
+            // will not get its SPELL_START / SPELL_GO / CAST_FAILED reply, or the
+            // reply will be keyed to a guid that no longer matches the destination
+            // map's bookkeeping. Without sweeping these orphans, a !HasStarted entry
+            // survives the transition and HasForwardedPendingCast() returns true on
+            // the destination map — the OUTER hold path at Server/SpellHandler.cs:443
+            // then swallows every subsequent cast for the rest of the session
+            // (warlock BG-entry total lockout observed 2026-05-24, 6h session).
+            // Same cleanup that ResetInFlightCastState does for the unplanned-
+            // reconnect path; held-slot drops mirror CancelGcdHold's silent drop on
+            // OnDisconnect / HandleLogoutComplete (no ack to modern client — the
+            // loading screen resets visible button state anyway).
+            var clearedCounts = GetSession().GameState.ResetInFlightCastState();
+            var droppedGcdHold = GetSession().GameState.CancelGcdHold();
+            var droppedCastTimeHold = GetSession().GameState.ClearHeldCastTimeCast();
+            Log.Event("session.world_transfer.cast_state_cleared", new
+            {
+                new_map_id = teleport.MapID,
+                normal_casts_cleared = clearedCounts.normalCasts,
+                pet_casts_cleared = clearedCounts.petCasts,
+                other_caster_ids_cleared = clearedCounts.otherCasterIds,
+                gcd_hold_dropped_spell_id = droppedGcdHold?.SpellId ?? 0,
+                cast_time_hold_dropped_spell_id = droppedCastTimeHold?.SpellId ?? 0,
+            });
 
             // --- START FIX: Map Transition Race Condition ---
             // JimsProxy (zep-transfer-stuck 2026-05-15): trimmed 2000ms → 50ms.
@@ -468,6 +496,13 @@ public partial class WorldClient
 
         speed.Speed = packet.ReadFloat();
         SendPacketToClient(speed);
+
+        // JimsProxy (speed-stuck-after-fear-while-mounted): cache for CC-end reassert.
+        if (universalOpcode == Opcode.SMSG_MOVE_SET_RUN_SPEED &&
+            speed.MoverGUID == GetSession().GameState.CurrentPlayerGuid)
+        {
+            GetSession().GameState.LastKnownPlayerRunSpeed = speed.Speed;
+        }
 
         // Convenience in vanilla to use SwimSpeed as FlySpeed
         if (universalOpcode is Opcode.SMSG_MOVE_SET_SWIM_SPEED
