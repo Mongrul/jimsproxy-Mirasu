@@ -343,6 +343,12 @@ public sealed class GameSessionData
     public List<World.Server.Packets.AuctionItem> AuctionReplicateAccumulator = new();
     public readonly Lock AuctionReplicateLock = new();
     public DateTime AuctionReplicateStartTime;
+    // JimsProxy (issue #305-ah): walk owner-items pages and combine into one SMSG; see memory.
+    public bool AuctionOwnerWalkInProgress;
+    public WowGuid128 AuctionOwnerWalkAuctioneer = WowGuid128.Empty;
+    public List<World.Server.Packets.AuctionItem> AuctionOwnerWalkAccumulator = new();
+    public readonly Lock AuctionOwnerWalkLock = new();
+    public long AuctionOwnerWalkLastFinalizedTickMs;
     public uint LastWhoRequestId;
     public WowGuid128 CurrentPetGuid;
     public WowGuid64 CurrentAttackTarget;        // active CMSG_ATTACK_SWING victim, cleared on ATTACK_STOP/CANCEL_COMBAT
