@@ -197,10 +197,11 @@ public partial class WorldClient
 
         if (isLocalPlayer && justRegainedControl)
         {
+            // JimsProxy (speed-stuck-after-fear-while-mounted): reassert cached speed, not 7.0f; see memory.
             MoveSetSpeed runFix = new MoveSetSpeed(Opcode.SMSG_MOVE_SET_RUN_SPEED);
             runFix.MoverGUID = control.Guid;
             runFix.MoveCounter = 0;
-            runFix.Speed = 7.0f; // Default WoW running speed
+            runFix.Speed = GetSession().GameState.LastKnownPlayerRunSpeed;
             SendPacketToClient(runFix);
         }
     }
@@ -468,6 +469,13 @@ public partial class WorldClient
 
         speed.Speed = packet.ReadFloat();
         SendPacketToClient(speed);
+
+        // JimsProxy (speed-stuck-after-fear-while-mounted): cache for CC-end reassert.
+        if (universalOpcode == Opcode.SMSG_MOVE_SET_RUN_SPEED &&
+            speed.MoverGUID == GetSession().GameState.CurrentPlayerGuid)
+        {
+            GetSession().GameState.LastKnownPlayerRunSpeed = speed.Speed;
+        }
 
         // Convenience in vanilla to use SwimSpeed as FlySpeed
         if (universalOpcode is Opcode.SMSG_MOVE_SET_SWIM_SPEED
