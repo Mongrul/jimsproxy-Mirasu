@@ -265,6 +265,20 @@ public sealed class GameSessionData
     // as the base so we can synthesize ModRangedHaste = resting / current. Written from
     // the WorldClient handler thread; ConcurrentDictionary keeps it torn-state safe.
     public ConcurrentDictionary<WowGuid128, uint> RestingRangedAttackTime = new();
+    // JimsProxy (#320): defer mid-swing UNIT_FIELD_BASEATTACKTIME field changes for the
+    // local player until the next SMSG_ATTACKER_STATE_UPDATE. Vanilla server's
+    // m_attackTimer is frozen at swing-start cadence (vmangos Unit.cpp ResetAttackTimer
+    // fires only on swing-out, NOT when a ModMeleeHaste aura applies/removes mid-swing),
+    // so the in-flight swing finishes at the OLD speed while the BASEATTACKTIME field
+    // jumps to the new speed immediately. WeaponSwingTimer / Quartz / ClassicSwingTimer
+    // all rescale the remaining swing-bar by (new/old) on UnitAttackSpeed change, landing
+    // the bar at 0 BEFORE the actual swing fires — the "bar ends early then snaps" /
+    // "0 hang" symptom. Slot 0=MH, 1=OH; ranged has its own RestingRangedAttackTime path
+    // (PR #287) that operates on a different mechanism (animation engine, not addon API).
+    public uint[] LastSentBaseAttackTime = new uint[2];
+    public uint[] PendingBaseAttackTime = new uint[2];
+    public bool[] HasPendingBaseAttackTime = new bool[2];
+    public long[] LastAttackerStateUpdateMs = new long[2];
     // JimsProxy: pet creature family cache. SMSG_PET_SPELLS_MESSAGE on pre-3.1
     // servers doesn't carry the family on the wire — we derive it from the
     // creature template via GetItemId(petGuid). For quest-tame pets the

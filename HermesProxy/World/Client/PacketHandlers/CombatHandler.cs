@@ -138,9 +138,43 @@ public partial class WorldClient
 
         SendPacketToClient(attack);
 
+        // JimsProxy (#320): on a real swing for the local player, record the swing time
+        // and flush any deferred BASEATTACKTIME so the speed change reaches the addon at
+        // the moment the new server-side cadence becomes effective. The HitInfo.OffHand
+        // bit picks the right slot.
+        if (attack.AttackerGUID == GetSession().GameState.CurrentPlayerGuid)
+        {
+            int slot = (hitInfo & (uint)HitInfo.OffHand) != 0 ? 1 : 0;
+            FlushDeferredBaseAttackTime(slot);
+        }
+
         // Threat translation: feed melee swing damage into the threat tracker.
         // Vanilla damage threat is 1.0 × raw damage, no school weighting.
         GetSession().ThreatTracker.OnDamage(attack.AttackerGUID, attack.VictimGUID, attack.Damage);
+    }
+
+    // JimsProxy (#320): record the swing timestamp and, if a BASEATTACKTIME change was
+    // deferred while the in-flight swing was running, synthesize a values-update carrying
+    // just the new AttackRoundBaseTime so addons re-poll UnitAttackSpeed with the correct
+    // post-swing value. Called from HandleAttackerStateUpdate (slot per HitInfo.OffHand)
+    // and from the combat-exit / attack-stop paths (both slots) so a pending value never
+    // outlives the swing window.
+    void FlushDeferredBaseAttackTime(int slot)
+    {
+        var state = GetSession().GameState;
+        state.LastAttackerStateUpdateMs[slot] = Environment.TickCount64;
+        if (!state.HasPendingBaseAttackTime[slot])
+            return;
+
+        uint pending = state.PendingBaseAttackTime[slot];
+        UpdateObject updateObject = new UpdateObject(state);
+        ObjectUpdate update = new ObjectUpdate(state.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
+        update.UnitData.AttackRoundBaseTime[slot] = pending;
+        updateObject.ObjectUpdates.Add(update);
+        SendPacketToClient(updateObject);
+
+        state.LastSentBaseAttackTime[slot] = pending;
+        state.HasPendingBaseAttackTime[slot] = false;
     }
     [PacketHandler(Opcode.SMSG_ATTACKSWING_NOTINRANGE)]
     void HandleAttackSwingNotInRange(WorldPacket packet)
@@ -178,6 +212,11 @@ public partial class WorldClient
         GetSession().GameState.DeferredAttackStop = false;
         CancelCombat combat = new();
         SendPacketToClient(combat);
+
+        // JimsProxy (#320): combat ended — flush any deferred BASEATTACKTIME for both slots
+        // so a SnD/buff applied just before combat exit doesn't sit pending forever.
+        FlushDeferredBaseAttackTime(0);
+        FlushDeferredBaseAttackTime(1);
 
         // Drop every mob's threat list — vanilla 1.12 doesn't emit a
         // "threat ended" signal, so without this the modern client retains

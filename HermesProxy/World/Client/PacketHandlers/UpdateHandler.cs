@@ -2373,10 +2373,53 @@ public partial class WorldClient
             int UNIT_FIELD_BASEATTACKTIME = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_BASEATTACKTIME);
             if (UNIT_FIELD_BASEATTACKTIME >= 0)
             {
+                bool isLocalPlayer = guid == GetSession().GameState.CurrentPlayerGuid;
                 for (int i = 0; i < 2; i++)
                 {
-                    if (updateMaskArray[UNIT_FIELD_BASEATTACKTIME + i])
-                        updateData.UnitData.AttackRoundBaseTime[i] = updates[UNIT_FIELD_BASEATTACKTIME + i].UInt32Value;
+                    if (!updateMaskArray[UNIT_FIELD_BASEATTACKTIME + i])
+                        continue;
+
+                    uint raw = updates[UNIT_FIELD_BASEATTACKTIME + i].UInt32Value;
+
+                    // JimsProxy (#320): for the local player, defer mid-swing speed changes
+                    // until the next SMSG_ATTACKER_STATE_UPDATE flushes them. See the comment
+                    // on LastSentBaseAttackTime in GlobalSessionData for full rationale — the
+                    // vanilla server doesn't recalculate m_attackTimer mid-swing, so the
+                    // BASEATTACKTIME field changing immediately while the in-flight swing
+                    // finishes at the OLD cadence breaks swing-timer addons' rescale math.
+                    bool deferred = false;
+                    if (isLocalPlayer && raw > 0)
+                    {
+                        var state = GetSession().GameState;
+                        uint lastSent = state.LastSentBaseAttackTime[i];
+                        long lastSwingMs = state.LastAttackerStateUpdateMs[i];
+                        long nowMs = Environment.TickCount64;
+                        // Defer only when the player is actively in an attack cycle. If they
+                        // /stopattacked mid-swing then cast SnD before combat times out, we
+                        // want the haste change to surface immediately rather than hang
+                        // until SMSG_CANCEL_COMBAT — they're not visibly swinging, so the
+                        // addon's "rescale on speed change" math can't go wrong.
+                        bool isAttacking = state.CurrentAttackTarget != default;
+                        bool inFlight = isAttacking &&
+                                        lastSent > 0 && lastSwingMs > 0 &&
+                                        (nowMs - lastSwingMs) < lastSent;
+
+                        if (inFlight && raw != lastSent)
+                        {
+                            state.PendingBaseAttackTime[i] = raw;
+                            state.HasPendingBaseAttackTime[i] = true;
+                            updateData.UnitData.AttackRoundBaseTime[i] = lastSent;
+                            deferred = true;
+                        }
+                        else
+                        {
+                            state.LastSentBaseAttackTime[i] = raw;
+                            state.HasPendingBaseAttackTime[i] = false;
+                        }
+                    }
+
+                    if (!deferred)
+                        updateData.UnitData.AttackRoundBaseTime[i] = raw;
                 }
             }
             int UNIT_FIELD_RANGEDATTACKTIME = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_RANGEDATTACKTIME);
