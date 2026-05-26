@@ -43,6 +43,9 @@ public partial class WorldClient
             }
             else if (!state.WaitingForAttackStart)
             {
+                // Server-initiated stop without our SWING: Gouge / Cheap Shot / Blind /
+                // Feign Death / stealth / Vanish. Must clear CurrentAttackTarget here or
+                // the next CMSG_ATTACK_SWING gets eaten by the dedupe guard at Server/CombatHandler.cs:16.
                 state.CurrentAttackTarget = default;
             }
             else if (rawVictim == state.CurrentAttackTarget)
