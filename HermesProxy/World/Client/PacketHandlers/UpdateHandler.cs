@@ -2955,10 +2955,21 @@ public partial class WorldClient
                         {
                             // The cached Applications is post-ReadAuraSlot adjustment:
                             //   wire + (1 if StackableAuras), then clamped to >=1.
-                            // Reverse the StackableAuras +1 to recover the expected wire byte.
+                            // Reverse both adjustments to recover the actual wire byte the server
+                            // would have written for THIS slot. Without the clamp reversal, every
+                            // non-stackable aura at wire-byte=0 (e.g. Kidney Shot, Cheap Shot, any
+                            // single-application debuff) gets a phantom re-emit whenever a *different*
+                            // slot in the same UNIT_FIELD_AURAAPPLICATIONS quad changes — because
+                            // the quad's mask fires for all 4 slots and the byte-diff check sees
+                            // cached=1 vs wire=0. Symptom: Hemorrhage cast on a target with Kidney
+                            // Shot in an adjacent slot triggered a Flicker refresh of the Kidney
+                            // Shot timer on every Hemorrhage proc.
                             byte expectedWire = cachedAuraForApps.Applications;
-                            if (GameData.StackableAuras.Contains(cachedAuraForApps.SpellID) && expectedWire > 0)
+                            bool isStackable = GameData.StackableAuras.Contains(cachedAuraForApps.SpellID);
+                            if (isStackable && expectedWire > 0)
                                 expectedWire = (byte)(expectedWire - 1);
+                            else if (!isStackable && expectedWire == 1)
+                                expectedWire = 0;
                             if (newWireApps != expectedWire)
                                 appsOnlyChanged = true;
                         }
