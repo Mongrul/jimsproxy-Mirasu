@@ -497,6 +497,15 @@ public sealed class ThreatTracker
         }
         if (victim == default) return;
 
+        // JimsProxy: vanilla threat is creature-only. If the victim isn't a creature
+        // (e.g., an ally Mind-Controlled by an enemy mob, an enemy player in PvP, a
+        // friendly hunter pet caught in AoE), don't register them as a fake "mob"
+        // — doing so emits an SMSG_THREAT_UPDATE per damage event for a unit that
+        // can't actually hold threat, which cascades to every group member's proxy
+        // and addon (Plater, Details, TinyThreat) and shows up as a damage-tick-
+        // synchronized lag spike. Reported repeatedly against MC scenarios in BGs.
+        if (victim.GetHighType() != HighGuidType.Creature) return;
+
         double abilityMultiplier = ThreatModules.GetDamageMultiplier(spellId);
         double passiveModifier = GetPassiveModifier(attacker);
         double talentMultiplier = GetSpellTalentMultiplier(attacker, spellId);
