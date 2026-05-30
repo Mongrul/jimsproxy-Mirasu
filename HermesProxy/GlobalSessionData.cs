@@ -1623,6 +1623,10 @@ public sealed class GameSessionData
     /// <summary>
     /// Clear only pending normal casts that haven't started yet.
     /// Keeps started casts so SPELL_GO can dequeue them later.
+    /// Also keeps off-GCD casts (Bloodrage, Sprint, Rapid Fire, racials): they coexist
+    /// with a normal GCD cast and the server processes them independently, so a normal
+    /// cast's SMSG_SPELL_START must not fail them — they resolve via their own
+    /// SPELL_GO / CAST_FAILED. See ClientCastRequest.IsOffGcd for the stuck-lit rationale.
     /// Returns the cleared casts so they can be failed.
     /// </summary>
     public List<ClientCastRequest> ClearNonStartedNormalCasts()
@@ -1634,7 +1638,7 @@ public sealed class GameSessionData
         {
             while (PendingNormalCasts.TryDequeue(out var current))
             {
-                if (current.HasStarted)
+                if (current.HasStarted || current.IsOffGcd)
                     keep.Add(current);
                 else
                     cleared.Add(current);
@@ -2259,6 +2263,17 @@ public class ClientCastRequest
     // instants still trigger BeginGcd. See JimsProxy issue #43 follow-up.
     public uint StartedCastTimeMs;
 
+    // JimsProxy (stuck-Bloodrage fix): true for off-GCD spells (Sprint, Evasion,
+    // Bloodrage, Rapid Fire, racials). Off-GCD casts coexist with a normal GCD cast,
+    // so when a normal cast's SMSG_SPELL_START arrives, ClearNonStartedNormalCasts
+    // must NOT sweep these out of the queue. The server casts them independently and
+    // their own SPELL_GO / CAST_FAILED resolves the button. Without this exemption the
+    // off-GCD cast gets a premature CAST_FAILED while its real SPELL_GO still arrives
+    // unmatched, leaving the action-bar highlight stuck-lit until relog.
+    // NOTE: only spell casts (HandleCastSpell) set this; item-use casts take a
+    // separate path and are NOT tagged off-GCD here — tracked in jimsproxy issue #345.
+    public bool IsOffGcd;
+
     // JimsProxy (PR #161 follow-up): when HandleSpellFailure peeks this entry
     // (instead of dequeuing) so the trailing SMSG_CAST_FAILED can deliver the
     // real reason, set this to TickCount64 + 2500ms. If HandleCastFailed
@@ -2268,6 +2283,11 @@ public class ClientCastRequest
     // button-lit state instead of leaking a HasStarted=true entry that
     // permanently blocks HasStartedNormalCast(). 0 = no watchdog active.
     public long WatchdogDeadlineMs;
+
+    // Watchdog window (ms) after which an unresolved cast is force-evicted. Single
+    // source of truth for the failure-peek path (HandleSpellFailure) and the off-GCD
+    // enqueue arming (#344 follow-up).
+    public const long WatchdogWindowMs = 2500;
 
     // JimsProxy (PR #161 follow-up — destroy-hook fast path): captured from
     // CastSpell.Cast.Target.Unit at enqueue time. When HandleDestroyObject
