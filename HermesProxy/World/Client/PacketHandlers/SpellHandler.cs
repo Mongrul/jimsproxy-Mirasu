@@ -3040,7 +3040,7 @@ public partial class WorldClient
     /// Sends an AuraUpdate packet to refresh the duration of an existing aura on a target.
     /// Called when an aura spell is recast on a target that already has the aura.
     /// </summary>
-    private void SendAuraRefreshUpdate(WowGuid128 target, uint spellId, WowGuid128 caster, byte slot, Dictionary<int, UpdateField> updateFields)
+    private void SendAuraRefreshUpdate(WowGuid128 target, uint spellId, WowGuid128 caster, byte slot, Dictionary<int, UpdateField> updateFields, bool forceFullRemaining = false)
     {
         AuraDataInfo? auraData = ReadAuraSlot(slot, target, updateFields);
         if (auraData == null || auraData.SpellID != spellId)
@@ -3090,7 +3090,7 @@ public partial class WorldClient
             {
                 auraData.Flags |= AuraFlagsModern.Duration;
                 auraData.Duration = durationFull;
-                auraData.Remaining = durationLeft > 0 ? durationLeft : durationFull;
+                auraData.Remaining = forceFullRemaining ? durationFull : (durationLeft > 0 ? durationLeft : durationFull);
 
                 GetSession().GameState.StoreAuraDurationLeft(target, slot, durationFull, Environment.TickCount);
                 GetSession().GameState.StoreAuraDurationFull(target, slot, durationFull);
