@@ -217,12 +217,14 @@ public partial class WorldClient
                 continue;
 
             SendAuraRefreshUpdate(victim, spellId, localPlayer, i, updateFields, forceFullRemaining: true);
-            Framework.Logging.Log.Event("judgement.refresh.synth", new
-            {
-                victim_low = victim.GetCounter(),
-                slot = (int)i,
-                spell_id = spellId,
-            });
+            // JimsProxy: gate this per-swing diagnostic behind DebugOutput (fires on every melee hit while a Judgement is up).
+            if (Framework.Settings.DebugOutput)
+                Framework.Logging.Log.Event("judgement.refresh.synth", new
+                {
+                    victim_low = victim.GetCounter(),
+                    slot = (int)i,
+                    spell_id = spellId,
+                });
         }
     }
     [PacketHandler(Opcode.SMSG_ATTACKSWING_NOTINRANGE)]
