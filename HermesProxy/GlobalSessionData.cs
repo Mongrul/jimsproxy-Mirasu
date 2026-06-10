@@ -5,6 +5,7 @@ using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server;
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -1674,6 +1675,54 @@ public sealed class GameSessionData
         }
 
         return cleared;
+    }
+
+    /// <summary>
+    /// Engineering-malfunction substitute spells mapped to the device whose forwarded item-use cast
+    /// they preempt. When a device malfunctions the server replaces the device's cast with one of
+    /// these substitutes and sends ITS CAST_FAILED (status != 2, discarded), so the device's item-use
+    /// cast never gets a SPELL_START or its own failure and sits forwarded-unstarted forever —
+    /// HasForwardedPendingCast() then jams every later press. Seeded with the only substitution
+    /// confirmed in packet logs: Malfunction Explosion (13261) -> Goblin Mortar (13237). Goblin Rocket
+    /// Boots (8892) and Sapper Charge (13241) are intentionally absent — they pair SPELL_START/GO
+    /// normally and never orphan. Expand as new substitute -> device pairs are confirmed.
+    /// </summary>
+    private static readonly FrozenDictionary<uint, uint> MalfunctionSubstituteToDevice =
+        new Dictionary<uint, uint>
+        {
+            [13261] = 13237, // Malfunction Explosion -> Goblin Mortar
+        }.ToFrozenDictionary();
+
+    /// <summary>
+    /// Evict the forwarded-but-unstarted item-use cast that a server-side malfunction substitute
+    /// preempted. Fires only when <paramref name="triggerSpellId"/> is a known malfunction substitute
+    /// and only evicts that substitute's specific device cast (see <see cref="MalfunctionSubstituteToDevice"/>),
+    /// so an unrelated status-0 CAST_FAILED can't evict a healthy in-flight item and the right victim
+    /// is always picked. Clears the orphan that would otherwise jam HasForwardedPendingCast(); returns
+    /// the evicted request so the caller can release its button state.
+    /// </summary>
+    public bool TryEvictForwardedItemUseCast(uint triggerSpellId, out ClientCastRequest? evicted)
+    {
+        evicted = null;
+
+        if (!MalfunctionSubstituteToDevice.TryGetValue(triggerSpellId, out var deviceSpellId))
+            return false;
+
+        var keep = new List<ClientCastRequest>();
+        lock (PendingCastsLock)
+        {
+            while (PendingNormalCasts.TryDequeue(out var current))
+            {
+                if (evicted == null && !current.HasStarted && !current.ItemGUID.IsEmpty()
+                    && current.SpellId == deviceSpellId)
+                    evicted = current;
+                else
+                    keep.Add(current);
+            }
+            foreach (var item in keep)
+                PendingNormalCasts.Enqueue(item);
+        }
+        return evicted != null;
     }
 
     /// <summary>
