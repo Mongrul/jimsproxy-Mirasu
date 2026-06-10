@@ -637,6 +637,20 @@ public partial class WorldClient
         SendPacketToClient(failed);
     }
 
+    // JimsProxy (warlock-pet-gcd-on-failure): synth SMSG_PET_CAST_FAILED(DontReport) so the modern client releases its predicted pet-button GCD sweep for a failed pet cast. Silent (the fizzle already played); the client matches by SpellID since CMSG_PET_ACTION presses carry no client CastID.
+    void SendPetGcdRelease(uint spellId, WowGuid128 castId)
+    {
+        PetCastFailed petFailed = new PetCastFailed();
+        petFailed.SpellID = spellId;
+        petFailed.Reason = (uint)SpellCastResultClassic.DontReport;
+        petFailed.CastID = castId;
+        SendPacketToClient(petFailed);
+    }
+
+    // JimsProxy (warlock-pet-gcd-on-failure): true if a CMSG_PET_CAST_SPELL for this spell is still queued — those get their own trailing SMSG_PET_CAST_FAILED, so the synthesized GCD release is gated to unqueued CMSG_PET_ACTION presses to avoid a double-fail.
+    bool HasQueuedPetCast(uint spellId) =>
+        GetSession().GameState.PendingPetCasts.Any(c => c.SpellId == spellId || (c.LegacySpellId != 0 && c.LegacySpellId == spellId));
+
     [PacketHandler(Opcode.SMSG_SPELL_FAILED_OTHER)]
     void HandleSpellFailedOther(WorldPacket packet)
     {
@@ -673,12 +687,17 @@ public partial class WorldClient
         if (GetSession().GameState.RecentlyForwardedSpellFailedOther.TryGetValue(dedupKey, out var lastMs) &&
             nowMs - lastMs < DedupWindowMs)
         {
+            // JimsProxy (warlock-pet-gcd-on-failure): the visual/SpellFailure storm is deduped, but a double-clicked pet-bar press is a distinct failed cast whose predicted GCD sweep must still be released. Gated to unqueued presses (CMSG_PET_ACTION, deterministic seed CastID).
+            bool dedupReleasePetGcd = GetSession().GameState.CurrentPetGuid == casterUnit && !HasQueuedPetCast(spellId);
+            if (dedupReleasePetGcd)
+                SendPetGcdRelease(spellId, WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, spellId, spellId + casterUnit.GetCounter()));
             Log.Event("spell.failed_other.dedup_skipped", new
             {
                 spellId,
                 reason,
                 casterCounter = casterUnit.GetCounter(),
                 ms_since_last = nowMs - lastMs,
+                sentPetCastFailed = dedupReleasePetGcd,
             });
             return;
         }
@@ -810,6 +829,14 @@ public partial class WorldClient
             }
         }
 
+        // JimsProxy (warlock-pet-gcd-on-failure): Kronos reports failed pet-bar casts via FAILED_OTHER only — release the client's predicted pet-button GCD sweep. Gated to unqueued presses (CMSG_PET_ACTION); a queued CMSG_PET_CAST_SPELL gets its own trailing PetCastFailed. The dedup branch above covers double-clicks.
+        bool sentPetCastFailed = false;
+        if (casterIsPet && !HasQueuedPetCast(spellId))
+        {
+            SendPetGcdRelease(spellId, castId);
+            sentPetCastFailed = true;
+        }
+
         Log.Event("spell.failed_other.routed", new
         {
             spellId,
@@ -821,6 +848,7 @@ public partial class WorldClient
             casterIsPet,
             sentInterruptLog,
             sentCancelVisual,
+            sentPetCastFailed,
             resolvedSpellVisualId,
             // Diagnostic: actual content of synthesized cleanup packets
             interruptLogCasterLow,
@@ -1126,6 +1154,14 @@ public partial class WorldClient
             }
         }
 
+        // JimsProxy (warlock-pet-gcd-on-failure): pet failures via SMSG_SPELL_FAILURE (not FAILED_OTHER) also need the predicted pet-button GCD sweep released. Gated to unqueued presses for the same reason as HandleSpellFailedOther.
+        bool sentPetCastFailed = false;
+        if (casterIsPet && !HasQueuedPetCast(spellId))
+        {
+            SendPetGcdRelease(spellId, castId);
+            sentPetCastFailed = true;
+        }
+
         // JimsProxy (cast-failure-stuck-visual 2026-05-10): For local-player cast
         // failures where SPELL_START was forwarded, the modern 1.14 client does not
         // reliably cancel the caster-side visual kit (casting pose, looping channel
@@ -1182,6 +1218,7 @@ public partial class WorldClient
             foundActiveCastId,
             sentInterruptLog,
             sentCancelVisual,
+            sentPetCastFailed,
             spellVisual,
             resolvedSpellVisualId,
             // Diagnostic: actual content of synthesized cleanup packets
