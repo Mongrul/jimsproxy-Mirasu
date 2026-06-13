@@ -205,6 +205,9 @@ public partial class WorldClient
         // the source of the problem instead of the watchdog catch-all.
         GetSession().EvictPendingCastsForDestroyedTarget(guid);
 
+        // JimsProxy (out-of-range-ghost): suppress any stray trailing movement the legacy server broadcasts for this guid after the destroy, until a CreateObject re-creates it.
+        GetSession().GameState.MarkObjectRecentlyDestroyed(guid);
+
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
         updateObject.DestroyedGuids.Add(guid);
         SendPacketToClient(updateObject);
@@ -313,6 +316,8 @@ public partial class WorldClient
                     // FarObjects bookkeeping so a later Values update for
                     // this guid doesn't double-promote.
                     GetSession().GameState.NeedsFullAuraRefresh.Remove(guid);
+                    // JimsProxy (out-of-range-ghost): unit re-created → stop suppressing its movement.
+                    GetSession().GameState.ClearRecentlyDestroyedObject(guid);
                     ReadCreateObjectBlock(packet, guid, updateData, auraUpdate, i);
 
                     if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
@@ -349,6 +354,8 @@ public partial class WorldClient
                     ObjectUpdate updateData = new ObjectUpdate(guid, UpdateTypeModern.CreateObject2, GetSession());
                     AuraUpdate auraUpdate = new AuraUpdate(guid, true);
                     GetSession().GameState.NeedsFullAuraRefresh.Remove(guid);
+                    // JimsProxy (out-of-range-ghost): unit re-created → stop suppressing its movement.
+                    GetSession().GameState.ClearRecentlyDestroyedObject(guid);
                     ReadCreateObjectBlock(packet, guid, updateData, auraUpdate, i);
 
                     if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
@@ -556,6 +563,8 @@ public partial class WorldClient
             // died to were uncached (in_client_cache=False) yet still emitting threat. Mirrors the destroy
             // handler so out-of-range and destroy are consistent.
             GetSession().ThreatTracker.OnUnitDestroyed(guid);
+            // JimsProxy (out-of-range-ghost): suppress stray trailing movement for this guid until it is re-created on re-approach.
+            GetSession().GameState.MarkObjectRecentlyDestroyed(guid);
 
             updateObject.OutOfRangeGuids.Add(guid);
         }

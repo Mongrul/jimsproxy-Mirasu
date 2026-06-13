@@ -330,6 +330,41 @@ public sealed class GameSessionData
     // Forwarding the first one is sufficient — the client cancels the cast bar / visual and
     // subsequent same-cast failures add no new state.
     public Dictionary<(WowGuid128 Caster, uint SpellId), long> RecentlyForwardedSpellFailedOther = new();
+
+    // JimsProxy (out-of-range-ghost): guids just destroyed / out-of-ranged and not yet re-created. Vanilla broadcasts a moving unit's trailing MSG_MOVE_* at map-level distance AFTER the per-object-visibility destroy; relaying that stray movement re-ghosts the unit "running in place" on the modern client until re-approach. Movement for these guids is dropped until a CreateObject clears the mark.
+    private readonly ConcurrentDictionary<WowGuid128, long> _recentlyDestroyedObjects = new();
+    private const long RecentlyDestroyedTtlMs = 10000;
+
+    public void MarkObjectRecentlyDestroyed(WowGuid128 guid)
+    {
+        if (guid.IsEmpty())
+            return;
+        _recentlyDestroyedObjects[guid] = Environment.TickCount64;
+        // Opportunistic sweep so a long session of spawns/despawns can't grow this unbounded.
+        if (_recentlyDestroyedObjects.Count > 4096)
+        {
+            long cutoff = Environment.TickCount64 - RecentlyDestroyedTtlMs;
+            foreach (var kvp in _recentlyDestroyedObjects)
+                if (kvp.Value < cutoff)
+                    _recentlyDestroyedObjects.TryRemove(kvp.Key, out _);
+        }
+    }
+
+    public void ClearRecentlyDestroyedObject(WowGuid128 guid) => _recentlyDestroyedObjects.TryRemove(guid, out _);
+
+    public bool WasObjectRecentlyDestroyed(WowGuid128 guid, out long agoMs)
+    {
+        agoMs = 0;
+        if (_recentlyDestroyedObjects.TryGetValue(guid, out long when))
+        {
+            agoMs = Environment.TickCount64 - when;
+            if (agoMs < RecentlyDestroyedTtlMs)
+                return true;
+            _recentlyDestroyedObjects.TryRemove(guid, out _);
+        }
+        return false;
+    }
+
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
     public int GroupUpdateCounter;
