@@ -400,6 +400,14 @@ public sealed class GameSessionData
     private uint _lastFiredSpellId;                     // spell ID forwarded by the timer; used to drop same-spell late presses
     public Action<ClientCastRequest>? OnGcdHeldCastFire; // set by WorldSocket at attach time; invoked on a ThreadPool thread at GCD expiry
 
+    // JimsProxy (observed-bow retract): an observed (non-local) unit auto-repeating — Auto Shot 75 / wand Shoot 5019 — latches the 1.14 client's intrinsic ranged-aim the moment we forward its SPELL_START, and vanilla never broadcasts a stop for other units, so once the shooter quits nothing lowers the weapon (your own char is fine — SMSG_SPELL_FAILURE retracts the local aim). Track last-shot time per shooter; a 500ms sweep fires SMSG_CANCEL_AUTO_REPEAT carrying THAT unit's GUID once it goes quiet past ObservedAutoRepeatQuietMs (the modern packet is per-GUID; the legacy SMSG_CANCEL_AUTO_REPEAT handler only ever cancels the local player). Refreshed on every shot so it never fires mid-series; a premature fire self-heals — the next shot's START re-raises the aim.
+    private readonly object _observedAutoRepeatLock = new();
+    private readonly Dictionary<WowGuid128, long> _observedAutoRepeatLastShotMs = new();
+    private Timer? _observedAutoRepeatSweepTimer;
+    public Action<WowGuid128>? OnObservedAutoRepeatExpire; // set by WorldClient; invoked on a ThreadPool thread per quiesced shooter
+    private const long ObservedAutoRepeatQuietMs = 4000;   // no shot for this long => series ended, lower the weapon (above slowest ~3.0s bow cadence + jitter so a steady shooter never flickers)
+    private const long ObservedAutoRepeatSweepTickMs = 500;
+
     // JimsProxy: cast-time spell queue. While a cast-time spell is in progress
     // (HasStartedNormalCast), presses are held here instead of dropped. Fired
     // on SPELL_GO when the cast completes. Most-recent-press-wins, one slot.
@@ -1814,6 +1822,7 @@ public sealed class GameSessionData
         // path that normally nulls it.
         CurrentClientNextMeleeCast = null;
         CurrentClientAutoRepeatCast = null;
+        ClearAllObservedAutoRepeat();
         return (normalCount, petCount, otherCount);
     }
 
@@ -2037,6 +2046,66 @@ public sealed class GameSessionData
         }
         if (toFire != null)
             OnGcdHeldCastFire?.Invoke(toFire);
+    }
+
+    // JimsProxy (observed-bow retract): record a shot from an observed auto-repeat shooter and lazily arm the 500ms quiescence sweep. SweepObservedAutoRepeat self-disarms the timer once the table empties.
+    public void NoteObservedAutoRepeatActivity(WowGuid128 shooter)
+    {
+        lock (_observedAutoRepeatLock)
+        {
+            _observedAutoRepeatLastShotMs[shooter] = Environment.TickCount64;
+            _observedAutoRepeatSweepTimer ??= new Timer(OnObservedAutoRepeatSweepTick, null, ObservedAutoRepeatSweepTickMs, ObservedAutoRepeatSweepTickMs);
+        }
+    }
+
+    // Test seam: record a shot at an injected timestamp without arming the real background timer (which runs on Environment.TickCount64 and would race injected-clock sweeps).
+    internal void NoteObservedAutoRepeatActivityForTest(WowGuid128 shooter, long nowMs)
+    {
+        lock (_observedAutoRepeatLock)
+            _observedAutoRepeatLastShotMs[shooter] = nowMs;
+    }
+
+    private void OnObservedAutoRepeatSweepTick(object? state)
+    {
+        // Invoke the cancel callback outside the lock (mirrors OnGcdTimerElapsed) so the off-thread SendPacketToClient never runs under _observedAutoRepeatLock.
+        foreach (var shooter in SweepObservedAutoRepeat(Environment.TickCount64))
+        {
+            // A sweep landing during session teardown must never surface an unhandled exception on the ThreadPool (would crash the process); the aim is moot once disconnected.
+            try { OnObservedAutoRepeatExpire?.Invoke(shooter); }
+            catch { }
+        }
+    }
+
+    // JimsProxy (observed-bow retract): remove and return shooters quiet past ObservedAutoRepeatQuietMs; disposes the sweep timer once the table empties so it self-disarms. Internal + injectable clock for deterministic tests.
+    internal List<WowGuid128> SweepObservedAutoRepeat(long nowMs)
+    {
+        var expired = new List<WowGuid128>();
+        lock (_observedAutoRepeatLock)
+        {
+            foreach (var kvp in _observedAutoRepeatLastShotMs)
+                if (nowMs - kvp.Value >= ObservedAutoRepeatQuietMs)
+                    expired.Add(kvp.Key);
+            foreach (var shooter in expired)
+                _observedAutoRepeatLastShotMs.Remove(shooter);
+            if (_observedAutoRepeatLastShotMs.Count == 0)
+            {
+                _observedAutoRepeatSweepTimer?.Dispose();
+                _observedAutoRepeatSweepTimer = null;
+            }
+        }
+        return expired;
+    }
+
+    // JimsProxy (observed-bow retract): drop all observed auto-repeat tracking, disarm the sweep, and unbind the cancel callback so a post-reconnect shot re-binds it to the live WorldClient. Called from ResetInFlightCastState alongside the other auto-repeat trackers.
+    public void ClearAllObservedAutoRepeat()
+    {
+        lock (_observedAutoRepeatLock)
+        {
+            _observedAutoRepeatLastShotMs.Clear();
+            _observedAutoRepeatSweepTimer?.Dispose();
+            _observedAutoRepeatSweepTimer = null;
+            OnObservedAutoRepeatExpire = null;
+        }
     }
 
     /// <summary>
