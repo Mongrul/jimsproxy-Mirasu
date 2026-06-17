@@ -1216,40 +1216,49 @@ public sealed class GameSessionData
     // Spell Cast Queue Helper Methods
 
     /// <summary>
-    /// Try to find and dequeue a pending cast by SpellId.
-    /// Prefers non-started entries when multiple entries match the same spell.
-    /// A started entry (HasStarted=true) is being tracked by the SPELL_START →
-    /// SPELL_GO lifecycle; CAST_FAILED for a rapid same-spell duplicate should
-    /// consume the non-started entry (the rejected cast) rather than the started
-    /// one (whose SPELL_GO is still in flight).
+    /// Try to find and dequeue a pending cast by SpellId. <paramref name="preferStarted"/>
+    /// selects which entry wins when multiple same-spell entries are queued — the off-GCD
+    /// double-send shape in Low-Latency mode, where the CMSG-side dup guard is bypassed and two
+    /// entries coexist (e.g. Blade Flurry: the first press's START marked entry A (started); the
+    /// duplicate left entry B (unstarted)):
+    /// <list type="bullet">
+    /// <item>SMSG_SPELL_GO and <i>real</i> failures pass <c>true</c> — they complete/fail the cast
+    /// SMSG_SPELL_START opened (the STARTED entry, whose CastID the client's cast visual is
+    /// showing), so START and GO pair. Falls back to the oldest unstarted entry for the skip-START
+    /// instant path (server emits GO with no preceding START).</item>
+    /// <item>A duplicate's NOT_READY / SpellInProgress rejection passes <c>false</c> — it must fail
+    /// the UNSTARTED dup and LEAVE the started entry for its in-flight GO. Falls back to a started
+    /// entry only if no unstarted one exists.</item>
+    /// </list>
+    /// Routing the two callers to opposite preferences is what makes the double-send pair
+    /// correctly in BOTH packet orderings (GO-before-fail and fail-before-GO). See H7.
     /// </summary>
-    public bool TryDequeuePendingNormalCast(uint spellId, out ClientCastRequest? cast)
+    public bool TryDequeuePendingNormalCast(uint spellId, out ClientCastRequest? cast, bool preferStarted = true)
     {
         var pending = new List<ClientCastRequest>();
         cast = null;
-        ClientCastRequest? startedFallback = null;
-        int startedFallbackIndex = -1;
+        ClientCastRequest? fallback = null;
+        int fallbackIndex = -1;
+        bool sawOppositeMatch = false;   // a same-spell entry in the non-preferred state was also queued
 
         lock (PendingCastsLock)
         {
             while (PendingNormalCasts.TryDequeue(out var current))
             {
-                if (cast == null && CastMatchesSpellId(current, spellId))
+                bool matches = CastMatchesSpellId(current, spellId);
+                bool preferred = matches && current.HasStarted == preferStarted;
+                if (matches && !preferred)
+                    sawOppositeMatch = true;
+
+                if (cast == null && preferred)
                 {
-                    if (!current.HasStarted)
-                    {
-                        cast = current;
-                    }
-                    else if (startedFallback == null)
-                    {
-                        startedFallback = current;
-                        startedFallbackIndex = pending.Count;
-                        pending.Add(current);
-                    }
-                    else
-                    {
-                        pending.Add(current);
-                    }
+                    cast = current;                       // first preferred match (FIFO order)
+                }
+                else if (cast == null && matches && fallback == null)
+                {
+                    fallback = current;                   // remember the first non-preferred match
+                    fallbackIndex = pending.Count;
+                    pending.Add(current);
                 }
                 else
                 {
@@ -1257,17 +1266,32 @@ public sealed class GameSessionData
                 }
             }
 
-            // No non-started match found — fall back to the first started entry
-            if (cast == null && startedFallback != null)
+            // No preferred match — fall back to the first non-preferred same-spell entry.
+            if (cast == null && fallback != null)
             {
-                cast = startedFallback;
-                pending.RemoveAt(startedFallbackIndex);
+                cast = fallback;
+                pending.RemoveAt(fallbackIndex);
             }
 
             foreach (var item in pending)
             {
                 PendingNormalCasts.Enqueue(item);
             }
+        }
+
+        // DIAGNOSTIC (H7 stuck-cast investigation): fires only when the dequeue resolved to its
+        // PREFERRED entry while a same-spell entry in the OPPOSITE state was also queued — the
+        // exact double-send ambiguity H7 describes, now resolved correctly. preferStarted=true
+        // (GO) → the started entry was kept paired; preferStarted=false (dup-failure) → the
+        // started entry was spared for its GO. Presence in the tester's JSONL confirms the
+        // condition was occurring. Remove when the investigation closes.
+        if (cast != null && sawOppositeMatch && cast.HasStarted == preferStarted && Framework.Settings.DebugOutput)
+        {
+            Log.Event(preferStarted ? "cast.go.prefer_started" : "cast.fail.spared_started", new
+            {
+                spell_id = spellId,
+                cast_id = cast.ServerGUID.ToString(),
+            });
         }
 
         return cast != null;
