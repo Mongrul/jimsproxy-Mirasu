@@ -547,6 +547,16 @@ public partial class WorldClient
                 SendPacketToClient(updateObject2);
 
             }
+            // JimsProxy (threat-wipe-on-combat-drop): an out-of-range guid is a visibility loss
+            // exactly like SMSG_DESTROY_OBJECT — the legacy cache is dropped above, so the threat
+            // tracker must drop it too. Without this, a mob that leaves via the FarObjects/out-of-range
+            // path (NOT an explicit destroy) keeps its threat list forever: we never get flags updates
+            // for an out-of-range unit, so the IN_COMBAT-evade edge can't fire, and threat kept building
+            // off range-independent combat-log broadcasts. Confirmed in 20260612 log: the mobs the player
+            // died to were uncached (in_client_cache=False) yet still emitting threat. Mirrors the destroy
+            // handler so out-of-range and destroy are consistent.
+            GetSession().ThreatTracker.OnUnitDestroyed(guid);
+
             updateObject.OutOfRangeGuids.Add(guid);
         }
     }
@@ -2369,6 +2379,15 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     updateData.UnitData.PvpFlags == null)
                     updateData.UnitData.PvpFlags = ReadPvPFlags(guid, updates);
+
+                // JimsProxy (threat-wipe-on-combat-drop): vanilla / Kronos never emit SMSG_CANCEL_COMBAT and never
+                // emit a per-mob "threat ended" packet, so a unit that drops combat (death, evade, flee, Feign Death,
+                // Vanish, fight end) kept its stale threat list — a mob the player died to bled into the next
+                // engagement, and a raider's FD/death never cleared their bar. Feed every unit's UNIT_FLAG_IN_COMBAT
+                // bit to the tracker; it removes just that threater (or clears the mob, if it evaded) on the
+                // set->clear edge. Done for ALL units, not only the local player, so groupmate FD/death is handled too.
+                GetSession().ThreatTracker.OnUnitCombatStateObserved(
+                    guid, (updates[UNIT_FIELD_FLAGS].UInt32Value & (uint)UnitFlagsVanilla.InCombat) != 0);
             }
             int UNIT_FIELD_FLAGS_2 = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS_2);
             if (UNIT_FIELD_FLAGS_2 >= 0 && updateMaskArray[UNIT_FIELD_FLAGS_2])
