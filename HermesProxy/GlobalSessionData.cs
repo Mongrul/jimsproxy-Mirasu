@@ -387,6 +387,12 @@ public sealed class GameSessionData
     // semantics as before this PR); only the new cross-thread path takes the lock.
     internal readonly object PendingCastsLock = new();
 
+    // JimsProxy (#313): the spell-queue hold-window width is configurable via
+    // Framework.Settings.SpellQueueWindowMs (400 retail-accurate / 1000 / 1300 smoothest;
+    // default 1300). The hold gates (IsInGcdQueueWindow / HasStartedCastInQueueWindow) read it
+    // directly: a press in the last SpellQueueWindowMs of an active GCD or cast bar is held and
+    // fired at expiry; earlier presses are forwarded for the server to arbitrate.
+
     // JimsProxy (issue #43): GCD hold-and-fire state. While the player is on a GCD (tracked
     // from SMSG_SPELL_GO), new CMSG_CAST_SPELL presses are held in _heldGcdCast instead of
     // flooding the server. At GCD expiry a Timer fires the most-recent held cast via the
@@ -1335,6 +1341,7 @@ public sealed class GameSessionData
             if (CastMatchesSpellId(item, spellId) && !item.HasStarted)
             {
                 item.HasStarted = true;
+                item.StartedAtTickMs = Environment.TickCount64;
                 cast = item;
                 return true;
             }
@@ -1479,6 +1486,31 @@ public sealed class GameSessionData
         foreach (var item in PendingNormalCasts)
         {
             if (item.HasStarted && item.TargetGuid == gameObjectGuid)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// JimsProxy: narrow variant of HasStartedNormalCast — returns true only when an
+    /// in-progress cast is within the last SpellQueueWindowMs of its cast bar. Mirrors
+    /// the 1.14 client's SpellQueueWindow=400 semantics: presses arriving in this window
+    /// get queued and fire on cast completion; earlier presses are forwarded to the server
+    /// and receive the server's actual response (SpellInProgress / NOT_READY etc.).
+    /// Used by the HandleCastSpell cast-time hold gate. The wider HasStartedNormalCast()
+    /// remains for callers that genuinely need "any started cast" (e.g. item-use duplicate
+    /// guards).
+    /// </summary>
+    public bool HasStartedCastInQueueWindow()
+    {
+        long now = Environment.TickCount64;
+        foreach (var item in PendingNormalCasts)
+        {
+            if (!item.HasStarted || item.StartedAtTickMs == 0 || item.StartedCastTimeMs == 0)
+                continue;
+            long castEnd = item.StartedAtTickMs + item.StartedCastTimeMs;
+            long remaining = castEnd - now;
+            if (remaining > 0 && remaining <= Framework.Settings.SpellQueueWindowMs)
                 return true;
         }
         return false;
@@ -1896,6 +1928,7 @@ public sealed class GameSessionData
             if (CastMatchesSpellId(item, spellId) && !item.HasStarted)
             {
                 item.HasStarted = true;
+                item.StartedAtTickMs = Environment.TickCount64;
                 cast = item;
                 return true;
             }
@@ -2001,6 +2034,24 @@ public sealed class GameSessionData
         lock (_gcdLock)
         {
             return _gcdExpireTimestampMs > Environment.TickCount64;
+        }
+    }
+
+    /// <summary>
+    /// JimsProxy: narrow variant of IsGcdHoldActive — returns true only when the GCD has
+    /// at most SpellQueueWindowMs remaining. Mirrors the 1.14 client's SpellQueueWindow
+    /// semantics for the GCD case (instants pressed in the last 400 ms of the previous cast's
+    /// GCD get queued and fire on GCD expiry; earlier presses are forwarded and receive the
+    /// server's NOT_READY). Used by the HandleCastSpell GCD hold gate. The wider
+    /// IsGcdHoldActive() remains for callers that need "is any GCD active at all"
+    /// (e.g. the held-cast-on-failure release path in Client/SpellHandler.cs).
+    /// </summary>
+    public bool IsInGcdQueueWindow()
+    {
+        lock (_gcdLock)
+        {
+            long remaining = _gcdExpireTimestampMs - Environment.TickCount64;
+            return remaining > 0 && remaining <= Framework.Settings.SpellQueueWindowMs;
         }
     }
 
@@ -2477,6 +2528,13 @@ public class ClientCastRequest
     // NOTE: only spell casts (HandleCastSpell) set this; item-use casts take a
     // separate path and are NOT tagged off-GCD here — tracked in jimsproxy issue #345.
     public bool IsOffGcd;
+
+    // JimsProxy: TickCount64 timestamp when SMSG_SPELL_START arrived for this cast.
+    // Set in TryMarkPendingNormalCastStarted / TryMarkPendingPetCastStarted. Used together
+    // with StartedCastTimeMs by HasStartedCastInQueueWindow to gate the cast-time hold
+    // to the last SpellQueueWindowMs of the cast bar (1.14 SpellQueueWindow semantics). 0 means
+    // SPELL_START has not yet arrived (entry is still !HasStarted).
+    public long StartedAtTickMs;
 
     // JimsProxy (PR #161 follow-up): when HandleSpellFailure peeks this entry
     // (instead of dequeuing) so the trailing SMSG_CAST_FAILED can deliver the
