@@ -646,6 +646,54 @@ public sealed class GameSessionData
     public HashSet<uint> RequestedItemHotfixes = [];
     public HashSet<uint> RequestedItemSparseHotfixes = [];
 
+    // JimsProxy (Kronos Chronoboon): items whose tooltip is dynamic server-side — Kronos rewrites
+    // the stored-world-buff list into the item's Description on each store/restore. The 1.14 client
+    // caches item templates by id and won't re-render a cached one from any push, so instead we
+    // alias the item to a throwaway entry id bumped on each change (the client re-fetches a never-
+    // seen id clean). DynamicItemRefreshPending parks (real entry -> item GUID) between the
+    // HandleUseItem re-query and its SMSG_ITEM_QUERY_SINGLE_RESPONSE. The guid->alias map itself lives in
+    // GameData.ItemEntryAlias (STATIC, so it survives a relogin — this per-session dict used to hold it,
+    // which wiped the alias on relog and reverted the item to its stale base-25007 cache).
+    public Dictionary<uint, WowGuid128> DynamicItemRefreshPending = [];
+
+    // JimsProxy (Kronos Chronoboon): entries whose pending refresh is a LOGIN-time proactive alias (set by
+    // the item-create hook), so HandleItemQueryResponse skips the on-use cooldown re-assert and name-gates
+    // the alias. WC-only (written + read on the WorldClient thread).
+    public HashSet<uint> LoginRefreshEntries = [];
+
+    // JimsProxy (Kronos Chronoboon): alias Item + ItemEffect hotfix packets pre-built at mint on the WC
+    // thread, drained + sent once by HandleDbQueryBulk (WS thread) in the client's ItemSparse query
+    // window. Pre-building keeps HandleDbQueryBulk from MUTATING the shared record stores off the WS
+    // thread (it would race the loot path's writes on the WC thread). ConcurrentDictionary: written WC,
+    // read/removed WS.
+    public ConcurrentDictionary<uint, List<ServerPacket>> AliasPendingPackets = new();
+
+    // JimsProxy (Kronos Chronoboon): a Chronoboon use whose tooltip refresh must wait for its long
+    // on-use cast to COMPLETE — the store only changes the item when the cast finishes, and
+    // recreating the item mid-cast cancels it. Keyed by the on-use (legacy) spell id; the matching
+    // SMSG_SPELL_GO (player caster) fires the deferred re-query. Value = (real entry, item GUID).
+    // ConcurrentDictionary: written on the WS thread (HandleUseItem), read+removed on the WC thread
+    // (HandleSpellGo). Normally separated by the ~10s cast, but a rapid re-use could overlap.
+    public ConcurrentDictionary<uint, (uint Entry, WowGuid128 Guid)> ChronoboonCastAwaitingGo = new();
+
+    // JimsProxy (Kronos Chronoboon): on-use spell ids of Chronoboon items the player has used this
+    // session. The server's SMSG_COOLDOWN_EVENT for these is dropped (HandleCooldownEvent) so the
+    // cooldown doesn't briefly paint on the OLD item before the destroy+recreate; it's re-asserted on
+    // the recreated item instead.
+    // ConcurrentDictionary (value unused): written WS (HandleUseItem), read WC (HandleCooldownEvent).
+    public ConcurrentDictionary<uint, byte> ChronoboonOnUseSpells = new();
+
+    // JimsProxy (Kronos Chronoboon): on-use cooldown END time (Environment.TickCount64 ms) keyed by the
+    // on-use spell id. Captured from SMSG_SEND_KNOWN_SPELLS at login (the legacy server sends every active
+    // cooldown there, banked items included) and refreshed on each use-path re-assert. Lets HandleShowBank
+    // repaint the sweep on a BANKED Chronoboon: the client learns the spell cooldown at login but never
+    // binds it to a bank item that only becomes visible when the bank opens. WC-thread only.
+    public Dictionary<uint, long> ChronoboonOnUseCooldownEndMs = new();
+
+    // JimsProxy (Kronos Chronoboon): item GUIDs presented as aliased Chronoboons this session, so
+    // HandleShowBank can repaint their cooldown without scanning the global (all-players) alias map. WC only.
+    public HashSet<WowGuid128> ChronoboonItemGuids = new();
+
     // Mobs we've seen send Flying spline or FixedZ movement flags. Vanilla servers
     // don't populate UNIT_FIELD_HOVERHEIGHT consistently (Twinstar e.g. leaves it at 0),
     // so we need a server-agnostic hover signal. Once a guid lands here, all subsequent
