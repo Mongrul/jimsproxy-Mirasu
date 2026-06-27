@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace HermesProxy.World.Client;
 
@@ -19,6 +20,10 @@ public partial class WorldClient
     // and shorter than feels-laggy to the user when the pathological Kronos
     // case kicks in (target-dies-mid-cast, no trailing CAST_FAILED).
     private const long WatchdogWindowMs = 2500;
+
+    // JimsProxy (Spell Success Kit Reset): defer (ms) before re-firing the cast-finish, so it lands
+    // in a clean client frame past the coalesced START+GO burst. A couple of frames at 60fps.
+    private const int SpellSuccessRefireDeferMs = 8;
 
     // Handlers for SMSG opcodes coming the legacy world server
     [PacketHandler(Opcode.SMSG_SEND_KNOWN_SPELLS)]
@@ -1761,6 +1766,56 @@ public partial class WorldClient
                     spell_id = spell.Cast.SpellID,
                     forced_cooldown_ms = gcdMs,
                     flags = 0x01,
+                });
+            }
+
+            // RefireSpellGo: runs on the FIRST SMSG_SPELL_GO the proxy receives from the server (Kronos
+            // always sends it — that's the trigger). When the client doesn't process that GO for an
+            // instant, the cast never closes client-side → the reported stuck cast: frozen cast pose +
+            // looping cast sound + lit action button, persisting until logout (survives /reload). Seen on
+            // Blade Flurry, Sunder, Battle Shout, holy casts. (Natural trigger appears to be the client
+            // coalescing the GO with the same-frame START, but that's inferred — we reproduce it with the
+            // injector, not yet captured in the wild.) We re-fire the cast-finish ~8ms later as a
+            // DUPLICATE SPELL_GO in a CLEAN frame (visual suppressed, no targets/log): the client
+            // processes the clean-frame copy and closes the cast. No effect/CLEU replay, cancels nothing,
+            // no-op on clean casts. Original GO forwards first (below). Local-player instants only.
+            // Caveat: needs the server to send the first GO — a server-missing GO wouldn't trigger this.
+            if (Settings.RefireSpellGo && pendingCast.StartedCastTimeMs == 0)
+            {
+                var rfCasterGuid = spell.Cast.CasterGUID;
+                var rfCasterUnit = spell.Cast.CasterUnit;
+                var rfCastId = spell.Cast.CastID;
+                var rfOriginalCastId = spell.Cast.OriginalCastID;
+                int rfSpellId = spell.Cast.SpellID;
+                uint rfCastFlags = spell.Cast.CastFlags;
+                uint rfCastFlagsEx = spell.Cast.CastFlagsEx;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(SpellSuccessRefireDeferMs);
+                    try
+                    {
+                        var refire = new SpellGo();
+                        refire.Cast.CasterGUID = rfCasterGuid;
+                        refire.Cast.CasterUnit = rfCasterUnit;
+                        refire.Cast.CastID = rfCastId;
+                        refire.Cast.OriginalCastID = rfOriginalCastId;
+                        refire.Cast.SpellID = rfSpellId;
+                        refire.Cast.SpellXSpellVisualID = 0; // suppress visual so nothing replays
+                        refire.Cast.CastFlags = rfCastFlags;
+                        refire.Cast.CastFlagsEx = rfCastFlagsEx;
+                        // targets + LogData left empty: a pure cast-finish, no effect/CLEU replay
+                        SendPacketToClient(refire);
+                        if (Framework.Settings.DebugOutput)
+                            Log.Event("cast.success_refire", new
+                            {
+                                spell_id = rfSpellId,
+                                defer_ms = SpellSuccessRefireDeferMs,
+                            });
+                    }
+                    catch
+                    {
+                        // session/socket may have torn down during the defer — best-effort
+                    }
                 });
             }
 
