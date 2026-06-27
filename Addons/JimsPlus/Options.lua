@@ -203,6 +203,7 @@ local cbBagSort = CreateCheckbox(panel, y,
     "Custom bag sort order  |cFF888888(Bagnon)|r",
     "Changes Bagnon's sort button to a curated layout:\npermanent fixtures (hearthstone) first, then profession and\ngathering tools, quest items, soulbound gear, other gear,\nconsumables, everything else, and junk last.\n\nAlso applies to Bagnon's bank sort. Takes effect on the\nnext sort — no reload needed.")
 y = y - 28
+
 -- More tool buttons can be added below (decrement y per button).
 
 ---------------------------------------------------------------------------

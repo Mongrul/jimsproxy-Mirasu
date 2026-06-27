@@ -1,30 +1,22 @@
 -- JimsPlus BagnonSort
--- Two hooks into Bagnon's (Wildpants) client-side bag sorter. Bagnon's own files
--- are never modified, so this survives Bagnon updates, and both hooks no-op when
--- Bagnon isn't installed.
+-- Paces Bagnon's (Wildpants) client-side bag sorter to dodge Kronos's item-move
+-- anti-flood. Bagnon's Sort:Iterate fires every needed swap at once (~16 in <20ms);
+-- the vmangos/Kronos server throttles that burst, bounces the overflow with
+-- SMSG_INVENTORY_CHANGE_FAILURE, and Bagnon retries the identical batch -- so the
+-- sort either crawls or never finishes (same anti-flood family as the over-speed-ping
+-- guard that forces the single login ping). Throttling to one swap per PACE_MS lets
+-- each land first try, so the sort completes cleanly -- just a couple seconds slower.
+-- Bagnon's own files are never touched, and the hooks no-op when Bagnon isn't loaded.
 --
--- 1. LOOP BREAKER (always on): Bagnon's sorter has no retry cap or backoff — a
---    move that never takes effect is recomputed and re-sent every 50ms forever
---    (Wildpants/api/sorting.lua: Iterate -> Move -> Delay(0.05, 'Run')). Any move
---    the proxy or server keeps rejecting becomes endless "That item cannot go in
---    that container" spam until /reload. After 3 identical attempted moves in one
---    sort run, the item is blacklisted for the rest of the run (marked sorted and
---    made unstackable in the in-memory model) so the sort converges and finishes.
---
--- 2. CUSTOM SORT ORDER (Options toggle, default on): replaces the sort comparator
---    with a category ranking — permanent fixtures (hearthstone), then profession/
---    gathering tools, quest items, soulbound (BoP) gear, other gear, consumables,
---    everything else, junk last. Within a category Bagnon's original ordering
---    applies. Lower rank lands closer to backpack slot 1. The Sorting module is
---    shared, so the order also applies to Bagnon's bank (and guild bank) sort.
---
--- Note: Bagnon prefers the server-side SortBags() when the client provides it
--- (Wildpants/classes/inventory.lua, serverSort default true). 1.14.2 has no
--- SortBags, so the client-side sorter — and these hooks — always run for the
--- inventory; if a future client build adds SortBags, both hooks silently stop
--- applying to the inventory sort and this file needs revisiting.
+-- Also carries an OPT-IN custom sort order (Options toggle, default OFF): a category
+-- ranking. Parked off until it's revalidated against the paced sorter.
 
 local _, namespace = ...
+
+-- Sort-move interval (ms), pinned to Kronos's item-move anti-flood limit: one swap per
+-- PACE_MS lands first try instead of being bounced in a burst. 30ms is the measured safe
+-- floor (was a 30-200ms Options slider during tuning; now fixed).
+local PACE_MS = 30
 
 local FIXTURES = {
     [6948] = true, -- Hearthstone
@@ -57,9 +49,8 @@ local QUESTITEM = (Enum and Enum.ItemClass and Enum.ItemClass.Questitem) or 12
 local CONSUMABLE = (Enum and Enum.ItemClass and Enum.ItemClass.Consumable) or 0
 
 -- Category rank for one of Bagnon's in-memory item tables (fields id, class,
--- quality, equip, bind — any of which may still be nil while item data loads).
--- "Soulbound gear" is approximated by BoP bind type: BoP items in bags are
--- necessarily soulbound; carried BoE gear ranks with other gear instead.
+-- quality, equip, bind -- any may still be nil while item data loads). "Soulbound
+-- gear" is approximated by BoP bind type.
 local function Rank(item)
     local id = item.id
     if FIXTURES[id] then return 0 end
@@ -74,9 +65,8 @@ local function Rank(item)
     return 6
 end
 
--- Item tables are rebuilt from scratch on every sort pass, so a rank stashed on
--- the table can't go stale; this keeps rank computation O(n) per pass instead of
--- O(n log n) comparator calls.
+-- Item tables are rebuilt each sort pass, so a stashed rank can't go stale; keeps
+-- rank computation O(n) per pass instead of O(n log n) comparator calls.
 local function GetRank(item)
     local r = item.jpSortRank
     if r == nil then
@@ -89,69 +79,35 @@ end
 local function Hook()
     local Sorting = Bagnon and Bagnon.Sorting
     if not Sorting or Sorting.jpHooked then return end
-    if type(Sorting.Start) ~= "function" or type(Sorting.Move) ~= "function"
-        or type(Sorting.GetSpaces) ~= "function" or type(Sorting.Rule) ~= "function" then
+    if type(Sorting.Move) ~= "function" or type(Sorting.Rule) ~= "function" then
         return
     end
     Sorting.jpHooked = true
 
-    ------------------------------------------------------------- loop breaker
-    local attempts, blacklist = {}, {}
-
-    local origStart = Sorting.Start
-    Sorting.Start = function(self, ...)
-        wipe(attempts)
-        wipe(blacklist)
-        return origStart(self, ...)
-    end
-
+    --------------------------------------------------------- anti-flood pacer
+    local lastMoveMs = 0
     local origMove = Sorting.Move
     Sorting.Move = function(self, from, to)
-        local id = from and from.item and from.item.id
-        if not id then
-            return origMove(self, from, to)
-        end
-        -- Deliberately no check of the DESTINATION against the blacklist: Iterate
-        -- schedules its re-run Delay unconditionally after every attempted move, so
-        -- silently skipping a move here would spin the sorter forever. A mover whose
-        -- swap with a blacklisted occupant keeps failing blacklists itself via its
-        -- own attempt count instead, which is bounded and terminates.
-        if blacklist[id] then return end
-        local sig = tostring(from.bag) .. ":" .. tostring(from.slot) .. ":"
-            .. tostring(to.bag) .. ":" .. tostring(to.slot) .. ":" .. id
-        if (attempts[sig] or 0) >= 3 then
-            -- The exact same move was sent 3 times without taking effect: it is
-            -- being rejected. Give up on this item for the rest of the run.
-            blacklist[id] = true
+        local now = GetTime() * 1000
+        if now - lastMoveMs < PACE_MS then
+            -- Too soon -- skip this swap. Bagnon's Iterate always re-schedules its
+            -- Delay(0.05, 'Run'), so the same move is retried on the next pass; we're
+            -- only metering how fast swaps actually reach the server. A skipped move
+            -- sets no locks (origMove not called), so the slots stay free to retry.
             return
         end
         local moved = origMove(self, from, to)
         if moved then
-            attempts[sig] = (attempts[sig] or 0) + 1
+            lastMoveMs = now
         end
         return moved
     end
 
-    local origGetSpaces = Sorting.GetSpaces
-    Sorting.GetSpaces = function(self, ...)
-        local spaces = origGetSpaces(self, ...)
-        if next(blacklist) and type(spaces) == "table" then
-            for _, space in ipairs(spaces) do
-                local item = space.item
-                if item and item.id and blacklist[item.id] then
-                    item.sorted = true -- skipped by every placement pass
-                    item.stack = nil   -- and by the stack-merge pass
-                end
-            end
-        end
-        return spaces
-    end
-
-    ------------------------------------------------------------- custom order
+    --------------------------------------------------------- custom order (opt-in, default OFF)
     local origRule = Sorting.Rule
     Sorting.Rule = function(a, b)
         local db = namespace.db
-        if db and db.bagSortOrder == false then
+        if not (db and db.bagSortOrder) then
             return origRule(a, b)
         end
         local ra, rb = GetRank(a), GetRank(b)
@@ -160,11 +116,38 @@ local function Hook()
         end
         return origRule(a, b)
     end
+
+    --------------------------------------------------------- keyring exclusion
+    -- Drop the keyring (container -2) from the bag set before every sort. Bagnon's
+    -- GetBagInfo only tags the keyring bag-family 9 (keys-only) when the client's
+    -- KEYRING_CONTAINER constant matches; on 1.14 it falls through to family 0, so the
+    -- sorter sees the keyring as general storage and moves the first non-key (e.g. Gold
+    -- Ore) into keyring slot 1. Kronos rejects a non-key in the keyring (keys-only) and
+    -- Bagnon retries the identical CMSG_SWAP_ITEM every 50ms forever -- the sort never
+    -- finishes. KeyringClamp's family override can't help here: it hooks
+    -- GetContainerNumFreeSlots, which GetBagInfo doesn't read for family. Keys never need
+    -- sorting, so excluding the keyring makes a keyring-slot target impossible. Builds a
+    -- new list (never mutates the frame's self.Bags, which still drives the display).
+    if type(Sorting.Start) == "function" then
+        local KEYRING = (type(KEYRING_CONTAINER) == "number") and KEYRING_CONTAINER or -2
+        local origStart = Sorting.Start
+        Sorting.Start = function(self, owner, bags)
+            if type(bags) == "table" then
+                local filtered = {}
+                for _, bag in pairs(bags) do
+                    if bag ~= KEYRING then
+                        filtered[#filtered + 1] = bag
+                    end
+                end
+                bags = filtered
+            end
+            return origStart(self, owner, bags)
+        end
+    end
 end
 
--- PLAYER_LOGIN covers the normal case (fires after all non-LoD addons load);
--- the ADDON_LOADED fallback covers Bagnon being loaded late (load-on-demand
--- packaging or an addon manager enabling it mid-session).
+-- PLAYER_LOGIN covers the normal case (after non-LoD addons load); ADDON_LOADED
+-- covers Bagnon being loaded late.
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("ADDON_LOADED")
