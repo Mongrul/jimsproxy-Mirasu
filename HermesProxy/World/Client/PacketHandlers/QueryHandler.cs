@@ -706,7 +706,6 @@ public partial class WorldClient
         // JimsProxy (Kronos Chronoboon): the modern client keys the bag pickup/putdown sound off the Item.db2 ItemGroupSoundsId (verified in the client's Item table: soul shards + empty/crystal/leaded vials = group 24 = the light glass "clink", full potions = 17, Misc class-15 = 16, a legacy-queried custom item = 0 = silent). Force 24 so the Chronoboon gets the soul-shard/empty-vial clink it has natively on 1.12. Set on the parsed template so the base item AND the alias clone (below) carry it; name shifts ("Empty"/"Supercharged...XL") as buffs store, so match on Contains.
         if (item.Name[0]?.Contains("Chronoboon Displacer") == true)
         {
-            GameData.MarkChronoboonEntry((uint)entry.Key); // lets the item-create path proactively alias it at login
             item.ItemGroupSoundsId = 24;
         }
 
@@ -721,14 +720,7 @@ public partial class WorldClient
         if (GetSession().GameState.DynamicItemRefreshPending.TryGetValue((uint)entry.Key, out var chronoGuid))
         {
             GetSession().GameState.DynamicItemRefreshPending.Remove((uint)entry.Key);
-            // Login-time proactive refreshes are flagged here (by the item-create hook): skip the on-use
-            // cooldown re-assert below (on login the server already provides the real cooldown; a full
-            // re-assert would phantom a 40min sweep on an off-cooldown item) and name-gate the alias, since
-            // the create hook may have queried a seeded entry that isn't a Chronoboon on this server.
-            bool isLoginRefresh = GetSession().GameState.LoginRefreshEntries.Remove((uint)entry.Key);
             GameData.StoreItemTemplate((uint)entry.Key, item); // keep the REAL template current (use-side detection reads it)
-            if (isLoginRefresh && !(item.Name[0]?.Contains("Chronoboon Displacer") == true))
-                return;
 
             // Mint a throwaway alias entry carrying the just-queried Name/Description/icon + on-use,
             // and present the bag item to the client under it (see the alias substitution in
@@ -753,7 +745,7 @@ public partial class WorldClient
             // SendPacketToClient's wait-for-socket loop if the player DC'd in the delay window.
             int onUseSpell = item.TriggeredSpellIds[0];
             int onUseCooldown = item.TriggeredSpellCooldowns[0];
-            if (!isLoginRefresh && onUseSpell > 0 && onUseCooldown > 0)
+            if (onUseSpell > 0 && onUseCooldown > 0)
             {
                 ItemCooldown itemCooldownPkt = new();
                 itemCooldownPkt.ItemGuid = chronoGuid;

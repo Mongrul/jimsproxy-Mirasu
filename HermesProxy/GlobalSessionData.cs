@@ -656,11 +656,6 @@ public sealed class GameSessionData
     // which wiped the alias on relog and reverted the item to its stale base-25007 cache).
     public Dictionary<uint, WowGuid128> DynamicItemRefreshPending = [];
 
-    // JimsProxy (Kronos Chronoboon): entries whose pending refresh is a LOGIN-time proactive alias (set by
-    // the item-create hook), so HandleItemQueryResponse skips the on-use cooldown re-assert and name-gates
-    // the alias. WC-only (written + read on the WorldClient thread).
-    public HashSet<uint> LoginRefreshEntries = [];
-
     // JimsProxy (Kronos Chronoboon): alias Item + ItemEffect hotfix packets pre-built at mint on the WC
     // thread, drained + sent once by HandleDbQueryBulk (WS thread) in the client's ItemSparse query
     // window. Pre-building keeps HandleDbQueryBulk from MUTATING the shared record stores off the WS

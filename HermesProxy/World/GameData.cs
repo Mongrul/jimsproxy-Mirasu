@@ -2434,13 +2434,6 @@ public static partial class GameData
     // fetches the record on login, so the sound lands with no item use and no client cache clear.
     public const uint HotfixItemEmulatorBegin = 320000;
 
-    // JimsProxy (Kronos Chronoboon): live per-session hotfix ids for dynamic-tooltip item
-    // refreshes. Far above every static range and monotonically increasing — the client
-    // ignores a hotfix id it has already applied, so a mid-session refresh MUST carry a
-    // never-seen id (UpdateHotfix reuses ids, which is why its updates silently no-op).
-    public const uint HotfixDynamicItemRefreshBegin = 5000000;
-    private static uint _dynamicItemRefreshHotfixCursor = HotfixDynamicItemRefreshBegin;
-
     // JimsProxy (Kronos Chronoboon): throwaway item-entry ids handed to the client so it re-fetches a
     // dynamic-tooltip item (the modern client caches templates per-id and won't refresh a cached one).
     // Two hard constraints learned in testing: (1) the id must be WITHIN the client's DB2 range
@@ -2477,17 +2470,6 @@ public static partial class GameData
     // stale empty-Chronoboon cache (the reported bank+relog "bugged out"). Keyed by the stable item GUID;
     // the alias records it points at also live in static stores, so the client's cached alias still renders.
     public static System.Collections.Concurrent.ConcurrentDictionary<WowGuid128, uint> ItemEntryAlias = new();
-
-    // JimsProxy (Kronos Chronoboon): item entries detected as Chronoboons (by name) this proxy run, so the
-    // item-create path can proactively alias them at LOGIN (sound + live tooltip without a use) via a cheap
-    // lookup instead of a per-item name check. Static + concurrent — shared across sessions/players.
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, byte> _knownChronoboonEntries = new();
-    public static void MarkChronoboonEntry(uint entry) => _knownChronoboonEntries.TryAdd(entry, 0);
-    public static bool IsKnownChronoboonEntry(uint entry) => _knownChronoboonEntries.ContainsKey(entry);
-    // Kronos's Chronoboon Displacer base entry — seeds the login-time proactive query so a client that has
-    // this id cached (and so never queries it) still gets the alias on first login, no use / cache clear.
-    // The query reply is name-gated before aliasing, so a non-Chronoboon 25007 on another server is safe.
-    public const uint ChronoboonBaseEntry = 25007;
 
     // JimsProxy (Kronos Chronoboon): free a no-longer-presented alias's records so they don't accumulate
     // forever (these stores are static — across all players + whole proxy uptime). Called on the WC thread
@@ -4313,78 +4295,6 @@ public static partial class GameData
             return GenerateHotFixMessage(row);
         }
         return null;
-    }
-
-    // JimsProxy (Kronos Chronoboon): refresh a dynamic-tooltip item's records mid-session from a
-    // fresh re-query. The server rewrites Name + Description (the stored-buff list, in ItemSparse)
-    // and may swap the icon (DisplayID, in the Item record's IconFileDataId). Updates the cached
-    // rows and replaces their relog hotfix entries with fresh ids, returning the rows that changed
-    // so the caller can live-push a DBReply for each (the DBReply — not a bare SMSG_HOTFIX_MESSAGE —
-    // is what makes the modern client re-read an already-cached item). Either out-row is null when
-    // that table didn't change (e.g. a use that was on cooldown re-queries identical text).
-    public static (ItemSparseRecord? Sparse, ItemRecord? Item) RefreshDynamicItemRecords(ItemTemplate item)
-    {
-        ItemSparseRecord? changedSparse = null;
-        if (ItemSparseRecordsStore.TryGetValue(item.Entry, out var sparseRow))
-        {
-            if (!string.Equals(sparseRow.Description ?? string.Empty, item.Description ?? string.Empty) ||
-                !string.Equals(sparseRow.Name1 ?? string.Empty, item.Name[0] ?? string.Empty))
-            {
-                UpdateItemSparseRecord(sparseRow, item);
-                changedSparse = sparseRow;
-            }
-        }
-        else
-        {
-            changedSparse = AddItemSparseRecord(item);
-        }
-
-        ItemRecord? changedItem = null;
-        int newIcon = (int)GetItemIconFileDataIdByDisplayId(item.DisplayID);
-        if (ItemRecordsStore.TryGetValue(item.Entry, out var itemRow))
-        {
-            if (newIcon != 0 && itemRow.IconFileDataId != newIcon)
-            {
-                UpdateItemRecord(itemRow, item);
-                changedItem = itemRow;
-            }
-        }
-        else
-        {
-            changedItem = AddItemRecord(item);
-        }
-
-        if (changedSparse != null)
-            RefreshDynamicHotfixRecord(DB2Hash.ItemSparse, (uint)changedSparse.Id,
-                buffer => WriteItemSparseHotfix(changedSparse!, buffer));
-        if (changedItem != null)
-            RefreshDynamicHotfixRecord(DB2Hash.Item, (uint)changedItem.Id,
-                buffer => WriteItemHotfix(changedItem!, buffer));
-
-        return (changedSparse, changedItem);
-    }
-
-    // Replace a record's hotfix-table entries with a single fresh, monotonic id so the relog
-    // handshake (SMSG_AVAILABLE_HOTFIXES) converges on the latest content. The live refresh
-    // itself rides the DBReply the caller sends; this just keeps next-login consistent.
-    private static void RefreshDynamicHotfixRecord(DB2Hash table, uint recordId, Action<Framework.IO.ByteBuffer> writer)
-    {
-        var stale = Hotfixes.Where(kv => kv.Value.TableHash == table && kv.Value.RecordId == recordId)
-                            .Select(kv => kv.Key).ToList();
-        foreach (var key in stale)
-            Hotfixes.Remove(key);
-
-        uint hotfixId = ++_dynamicItemRefreshHotfixCursor;
-        HotfixRecord record = new HotfixRecord
-        {
-            HotfixId = hotfixId,
-            UniqueId = hotfixId,
-            TableHash = table,
-            RecordId = recordId,
-            Status = HotfixStatus.Valid,
-        };
-        writer(record.HotfixContent);
-        Hotfixes[hotfixId] = record;
     }
 
     // Records relocated by the slot-mismatch preservation path below. Future queries
