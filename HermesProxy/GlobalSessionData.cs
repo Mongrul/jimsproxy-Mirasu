@@ -400,13 +400,21 @@ public sealed class GameSessionData
     private uint _lastFiredSpellId;                     // spell ID forwarded by the timer; used to drop same-spell late presses
     public Action<ClientCastRequest>? OnGcdHeldCastFire; // set by WorldSocket at attach time; invoked on a ThreadPool thread at GCD expiry
 
-    // JimsProxy (observed-bow retract): an observed (non-local) unit auto-repeating — Auto Shot 75 / wand Shoot 5019 — latches the 1.14 client's intrinsic ranged-aim the moment we forward its SPELL_START, and vanilla never broadcasts a stop for other units, so once the shooter quits nothing lowers the weapon (your own char is fine — SMSG_SPELL_FAILURE retracts the local aim). Track last-shot time per shooter; a 500ms sweep fires SMSG_CANCEL_AUTO_REPEAT carrying THAT unit's GUID once it goes quiet past ObservedAutoRepeatQuietMs (the modern packet is per-GUID; the legacy SMSG_CANCEL_AUTO_REPEAT handler only ever cancels the local player). Refreshed on every shot so it never fires mid-series; a premature fire self-heals — the next shot's START re-raises the aim.
+    // JimsProxy (observed-bow retract): an observed (non-local) unit auto-repeating — Auto Shot 75 / wand Shoot 5019 — latches the 1.14 client's intrinsic ranged-aim the moment we forward its SPELL_START, and vanilla never broadcasts a stop for other units, so once the shooter quits nothing lowers the weapon (your own char is fine — SMSG_SPELL_FAILURE retracts the local aim). Hybrid retract: DETERMINISTIC stop edges — the target dies (PARTY_KILL_LOG / health->0), or the shooter itself dies, moves, or retargets — lower the bow instantly, AND a quiescence timer is the catch-all for the case no edge covers: the shooter stops with its target still alive and stands still (out of ammo, /stopattack, LoS, target dummy). Each latched shooter tracks its current target (for the death/retarget edges) and its last-shot time (for the sweep). The sweep fires SMSG_CANCEL_AUTO_REPEAT carrying THAT unit's GUID once it goes quiet past ObservedAutoRepeatQuietMs (the modern packet is per-GUID; the legacy handler only ever cancels the local player); the threshold sits above the slowest bow cadence + jitter so a steady shooter never flickers, and a premature retract self-heals — the next shot's START re-raises the aim.
     private readonly object _observedAutoRepeatLock = new();
-    private readonly Dictionary<WowGuid128, long> _observedAutoRepeatLastShotMs = new();
+    private readonly Dictionary<WowGuid128, ObservedShooterState> _observedShooterTargets = new();
     private Timer? _observedAutoRepeatSweepTimer;
-    public Action<WowGuid128>? OnObservedAutoRepeatExpire; // set by WorldClient; invoked on a ThreadPool thread per quiesced shooter
+    public Action<WowGuid128>? OnObservedAutoRepeatExpire; // set by WorldClient; invoked on a ThreadPool thread per quiesced shooter (also gates the timer — null in tests, so no real timer is armed)
     private const long ObservedAutoRepeatQuietMs = 4000;   // no shot for this long => series ended, lower the weapon (above slowest ~3.0s bow cadence + jitter so a steady shooter never flickers)
     private const long ObservedAutoRepeatSweepTickMs = 500;
+
+    // JimsProxy (observed-bow retract): per-shooter latch state — the unit it's shooting (death/retarget edges match on it) and its last-shot time (the quiescence sweep retracts once this goes stale).
+    private readonly struct ObservedShooterState
+    {
+        public readonly WowGuid128 Target;
+        public readonly long LastShotMs;
+        public ObservedShooterState(WowGuid128 target, long lastShotMs) { Target = target; LastShotMs = lastShotMs; }
+    }
 
     // JimsProxy: cast-time spell queue. While a cast-time spell is in progress
     // (HasStartedNormalCast), presses are held here instead of dropped. Fired
@@ -2048,21 +2056,58 @@ public sealed class GameSessionData
             OnGcdHeldCastFire?.Invoke(toFire);
     }
 
-    // JimsProxy (observed-bow retract): record a shot from an observed auto-repeat shooter and lazily arm the 500ms quiescence sweep. SweepObservedAutoRepeat self-disarms the timer once the table empties.
-    public void NoteObservedAutoRepeatActivity(WowGuid128 shooter)
+    // JimsProxy (observed-bow retract): mark an observed shooter latched (we forwarded its auto-repeat aim), cache the unit it's shooting (refreshed each shot so a mid-series retarget updates the death-match key) and stamp the shot time, then lazily arm the quiescence sweep. The timer is armed only when OnObservedAutoRepeatExpire is bound (production WorldClient) — null in tests, so the suite never spins a real timer; the deterministic edges run regardless.
+    public void NoteObservedAutoRepeatActivity(WowGuid128 shooter, WowGuid128 target)
     {
         lock (_observedAutoRepeatLock)
         {
-            _observedAutoRepeatLastShotMs[shooter] = Environment.TickCount64;
-            _observedAutoRepeatSweepTimer ??= new Timer(OnObservedAutoRepeatSweepTick, null, ObservedAutoRepeatSweepTickMs, ObservedAutoRepeatSweepTickMs);
+            _observedShooterTargets[shooter] = new ObservedShooterState(target, Environment.TickCount64);
+            if (OnObservedAutoRepeatExpire != null)
+                _observedAutoRepeatSweepTimer ??= new Timer(OnObservedAutoRepeatSweepTick, null, ObservedAutoRepeatSweepTickMs, ObservedAutoRepeatSweepTickMs);
         }
     }
 
-    // Test seam: record a shot at an injected timestamp without arming the real background timer (which runs on Environment.TickCount64 and would race injected-clock sweeps).
-    internal void NoteObservedAutoRepeatActivityForTest(WowGuid128 shooter, long nowMs)
+    // Test seam: latch a shooter at an injected timestamp without arming the real background timer (which runs on Environment.TickCount64 and would race injected-clock sweeps).
+    internal void NoteObservedAutoRepeatActivityForTest(WowGuid128 shooter, WowGuid128 target, long nowMs)
     {
         lock (_observedAutoRepeatLock)
-            _observedAutoRepeatLastShotMs[shooter] = nowMs;
+            _observedShooterTargets[shooter] = new ObservedShooterState(target, nowMs);
+    }
+
+    // JimsProxy (observed-bow retract): a deterministic stop edge for one shooter (it moved or died, or we're tearing down) — drop the latch and report whether it WAS latched so the caller sends exactly one SMSG_CANCEL_AUTO_REPEAT.
+    public bool TryEndObservedAutoRepeat(WowGuid128 shooter)
+    {
+        lock (_observedAutoRepeatLock)
+            return _observedShooterTargets.Remove(shooter);
+    }
+
+    // JimsProxy (observed-bow retract): the shooter's UNIT_FIELD_TARGET changed — if it's latched and now aimed elsewhere (or cleared), the prior series ended, so drop the latch and report it for retract. A still-firing retarget self-heals on the next shot's START.
+    public bool TryEndObservedAutoRepeatOnTargetChange(WowGuid128 shooter, WowGuid128 newTarget)
+    {
+        lock (_observedAutoRepeatLock)
+        {
+            if (_observedShooterTargets.TryGetValue(shooter, out var cached) && cached.Target != newTarget)
+            {
+                _observedShooterTargets.Remove(shooter);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // JimsProxy (observed-bow retract): a unit died (PARTY_KILL_LOG victim or health->0) — collect and drop every observed shooter aimed at it so the caller retracts each. Terminal-proof: a corpse can't be shot, so the retract can never be contradicted.
+    public List<WowGuid128> EndObservedAutoRepeatForVictim(WowGuid128 victim)
+    {
+        var hit = new List<WowGuid128>();
+        lock (_observedAutoRepeatLock)
+        {
+            foreach (var kvp in _observedShooterTargets)
+                if (kvp.Value.Target == victim)
+                    hit.Add(kvp.Key);
+            foreach (var shooter in hit)
+                _observedShooterTargets.Remove(shooter);
+        }
+        return hit;
     }
 
     private void OnObservedAutoRepeatSweepTick(object? state)
@@ -2076,18 +2121,18 @@ public sealed class GameSessionData
         }
     }
 
-    // JimsProxy (observed-bow retract): remove and return shooters quiet past ObservedAutoRepeatQuietMs; disposes the sweep timer once the table empties so it self-disarms. Internal + injectable clock for deterministic tests.
+    // JimsProxy (observed-bow retract): the quiescence catch-all — remove and return shooters quiet past ObservedAutoRepeatQuietMs (no edge covered their stop: out of ammo, /stopattack, LoS, target dummy), and dispose the sweep timer once the table empties so it self-disarms. Internal + injectable clock for deterministic tests.
     internal List<WowGuid128> SweepObservedAutoRepeat(long nowMs)
     {
         var expired = new List<WowGuid128>();
         lock (_observedAutoRepeatLock)
         {
-            foreach (var kvp in _observedAutoRepeatLastShotMs)
-                if (nowMs - kvp.Value >= ObservedAutoRepeatQuietMs)
+            foreach (var kvp in _observedShooterTargets)
+                if (nowMs - kvp.Value.LastShotMs >= ObservedAutoRepeatQuietMs)
                     expired.Add(kvp.Key);
             foreach (var shooter in expired)
-                _observedAutoRepeatLastShotMs.Remove(shooter);
-            if (_observedAutoRepeatLastShotMs.Count == 0)
+                _observedShooterTargets.Remove(shooter);
+            if (_observedShooterTargets.Count == 0)
             {
                 _observedAutoRepeatSweepTimer?.Dispose();
                 _observedAutoRepeatSweepTimer = null;
@@ -2096,12 +2141,12 @@ public sealed class GameSessionData
         return expired;
     }
 
-    // JimsProxy (observed-bow retract): drop all observed auto-repeat tracking, disarm the sweep, and unbind the cancel callback so a post-reconnect shot re-binds it to the live WorldClient. Called from ResetInFlightCastState alongside the other auto-repeat trackers.
+    // JimsProxy (observed-bow retract): drop all observed auto-repeat tracking on reconnect, disarm the sweep, and unbind the cancel callback so a post-reconnect shot re-binds it to the live WorldClient. Called from ResetInFlightCastState alongside the other auto-repeat trackers.
     public void ClearAllObservedAutoRepeat()
     {
         lock (_observedAutoRepeatLock)
         {
-            _observedAutoRepeatLastShotMs.Clear();
+            _observedShooterTargets.Clear();
             _observedAutoRepeatSweepTimer?.Dispose();
             _observedAutoRepeatSweepTimer = null;
             OnObservedAutoRepeatExpire = null;

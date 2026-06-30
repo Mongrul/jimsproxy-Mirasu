@@ -1234,15 +1234,37 @@ public partial class WorldClient
     // JimsProxy (observed-bow): forwarding an observed ranged auto-repeat SPELL_START (Auto Shot/Shoot) latches the 1.14 client's intrinsic auto-repeat aim (spell 75 = SPELL_ATTR2_AUTO_REPEAT, no client SpellVisual) and nothing retracts it for observers (SPELL_GO / SPELL_FAILURE / SPELL_FAILED_OTHER / CANCEL_AUTO_REPEAT / a SheatheState push were all verified non-working in-client — SheatheState only stows the weapon, leaving the arms locked in the aim). So we hold each observed auto-repeat START here and replay it paired with its SPELL_GO (HandleSpellGo) only when the shot fires — the draw shows for shots that fire, and a shot that aborts (no GO) is never forwarded, so it can't stick. Held per caster; touched only on the WorldClient ReceiveLoop (HandleSpellStart/Go), so no lock needed.
     private readonly Dictionary<WowGuid128, SpellStart> _pendingObservedAutoRepeatStart = new();
 
-    // JimsProxy (observed-bow retract): lower an observed shooter's latched ranged-aim by synthesizing SMSG_CANCEL_AUTO_REPEAT with THAT unit's GUID (the legacy handler only ever cancels the local player, and vanilla never broadcasts a stop for other units). Invoked off the WorldClient ReceiveLoop on the quiescence sweep's ThreadPool thread; SendPacketToClient is already used off-thread (taxi/GCD), so this is safe.
+    // JimsProxy (observed-bow retract): lower an observed shooter's latched ranged-aim by synthesizing SMSG_CANCEL_AUTO_REPEAT with THAT unit's GUID (the legacy handler only ever cancels the local player, and vanilla never broadcasts a stop for other units). Driven both from deterministic stop edges on the WorldClient ReceiveLoop (target death / shooter death / move / retarget) and from the quiescence sweep's ThreadPool thread; SendPacketToClient is already used off-thread (taxi/GCD), so this is safe.
     private void SendObservedAutoRepeatCancel(WowGuid128 shooter)
     {
-        // Runs on the sweep's ThreadPool thread; if the session is mid-teardown, skip rather than block in SendPacketToClient's wait-for-instance loop — the aim is moot once disconnected.
+        // If the session is mid-teardown skip rather than block in SendPacketToClient's wait-for-instance loop — the aim is moot once disconnected.
         if (GetSession().InstanceSocket == null || !GetSession().GameState.IsConnectedToInstance)
             return;
         SendPacketToClient(new CancelAutoRepeat { Guid = shooter });
         if (Framework.Settings.DebugOutput)
             Log.Event("ranged.auto_repeat.remote_cancel", new { caster_low = shooter.GetCounter() });
+    }
+
+    // JimsProxy (observed-bow retract): a shooter stopped firing in place (moved) or died — lower its bow if it was latched. One dict remove => exactly one cancel.
+    private void RetractObservedShooterOnStop(WowGuid128 shooter)
+    {
+        if (GetSession().GameState.TryEndObservedAutoRepeat(shooter))
+            SendObservedAutoRepeatCancel(shooter);
+    }
+
+    // JimsProxy (observed-bow retract): the shooter switched or cleared its target — the prior auto-repeat series ended; retract if it was latched and the target actually changed.
+    private void RetractObservedShooterOnTargetChange(WowGuid128 shooter, WowGuid128 newTarget)
+    {
+        if (GetSession().GameState.TryEndObservedAutoRepeatOnTargetChange(shooter, newTarget))
+            SendObservedAutoRepeatCancel(shooter);
+    }
+
+    // JimsProxy (observed-bow retract): a unit died — retract every observed shooter aimed at it (terminal-proof), plus the dead unit itself if it was a shooter.
+    private void RetractObservedShootersOnUnitDeath(WowGuid128 victim)
+    {
+        foreach (var shooter in GetSession().GameState.EndObservedAutoRepeatForVictim(victim))
+            SendObservedAutoRepeatCancel(shooter);
+        RetractObservedShooterOnStop(victim);
     }
 
     [PacketHandler(Opcode.SMSG_SPELL_START)]
@@ -1804,7 +1826,7 @@ public partial class WorldClient
             spell.Cast.CasterUnit = stunTarget;
         }
 
-        // JimsProxy (observed-bow): replay this observed caster's held auto-repeat START now, paired to this GO (CastID-matched) so the client renders a complete draw+fire, and note the shot so the quiescence sweep can lower the weapon once the series ends. A held START whose GO never arrives is never forwarded, so it can't latch the aim.
+        // JimsProxy (observed-bow): replay this observed caster's held auto-repeat START now, paired to this GO (CastID-matched) so the client renders a complete draw+fire, and latch the shooter against its target so a deterministic stop edge can lower the weapon. A held START whose GO never arrives is never forwarded, so it can't latch the aim.
         if (spell.Cast.CasterUnit != GetSession().GameState.CurrentPlayerGuid
             && spell.Cast.CasterUnit != GetSession().GameState.CurrentPetGuid
             && GameData.AutoRepeatSpells.Contains((uint)spell.Cast.SpellID))
@@ -1816,9 +1838,14 @@ public partial class WorldClient
                 if (Framework.Settings.DebugOutput)
                     Log.Event("ranged.auto_repeat.start_replayed", new { caster_low = spell.Cast.CasterUnit.GetCounter(), spell_id = spell.Cast.SpellID });
             }
-            // Track every observed shot (replayed START or bare tick GO); the sweep fires SMSG_CANCEL_AUTO_REPEAT for this shooter once it goes quiet, so the aim doesn't stay latched after they stop. Callback bound lazily to this live WorldClient (mirrors OnGcdHeldCastFire).
+            // Latch the shooter against the unit it's shooting (explicit target, else the hit/miss target) so target-death retracts it; refreshed each shot so a mid-series retarget updates the death-match key. Every observed shot re-latches (replayed START or bare tick GO).
+            WowGuid128 shotTarget = !spell.Cast.Target.Unit.IsEmpty() ? spell.Cast.Target.Unit
+                : spell.Cast.HitTargets.Count > 0 ? spell.Cast.HitTargets[0]
+                : spell.Cast.MissTargets.Count > 0 ? spell.Cast.MissTargets[0]
+                : WowGuid128.Empty;
+            // Bind the sweep's cancel callback lazily to this live WorldClient (mirrors OnGcdHeldCastFire); also gates the quiescence timer on in NoteObservedAutoRepeatActivity.
             GetSession().GameState.OnObservedAutoRepeatExpire ??= SendObservedAutoRepeatCancel;
-            GetSession().GameState.NoteObservedAutoRepeatActivity(spell.Cast.CasterUnit);
+            GetSession().GameState.NoteObservedAutoRepeatActivity(spell.Cast.CasterUnit, shotTarget);
         }
 
         SendPacketToClient(spell);

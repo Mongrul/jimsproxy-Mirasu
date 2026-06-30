@@ -244,5 +244,8 @@ public partial class WorldClient
         // client's threat APIs go quiet on this unit instead of waiting for
         // the corpse-despawn SMSG_DESTROY_OBJECT.
         GetSession().ThreatTracker.ClearMob(log.Victim);
+
+        // JimsProxy (observed-bow retract): the victim's death is a terminal stop edge — lower the bow of any observed shooter aimed at it (a corpse can't be shot, so this can't be contradicted).
+        RetractObservedShootersOnUnitDeath(log.Victim);
     }
 }
