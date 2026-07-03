@@ -440,6 +440,7 @@ public sealed class GameSessionData
     private bool _gcdTimerHasFired;                     // true after OnGcdTimerElapsed runs; prevents orphaned holds
     private uint _lastFiredSpellId;                     // spell ID forwarded by the timer; used to drop same-spell late presses
     public Action<ClientCastRequest>? OnGcdHeldCastFire; // set by WorldSocket at attach time; invoked on a ThreadPool thread at GCD expiry
+    public Action<ClientCastRequest>? OnAutoRepeatRetry; // set by WorldSocket; refires Shoot/Auto Shot after retryable legacy failures
 
     // JimsProxy (observed-bow retract): an observed (non-local) unit auto-repeating — Auto Shot 75 / wand Shoot 5019 — latches the 1.14 client's intrinsic ranged-aim the moment we forward its SPELL_START, and vanilla never broadcasts a stop for other units, so once the shooter quits nothing lowers the weapon (your own char is fine — SMSG_SPELL_FAILURE retracts the local aim). Hybrid retract: DETERMINISTIC stop edges — the target dies (PARTY_KILL_LOG / health->0), or the shooter itself dies, moves, or retargets — lower the bow instantly, AND a quiescence timer is the catch-all for the case no edge covers: the shooter stops with its target still alive and stands still (out of ammo, /stopattack, LoS, target dummy). Each latched shooter tracks its current target (for the death/retarget edges) and its last-shot time (for the sweep). The sweep fires SMSG_CANCEL_AUTO_REPEAT carrying THAT unit's GUID once it goes quiet past ObservedAutoRepeatQuietMs (the modern packet is per-GUID; the legacy handler only ever cancels the local player); the threshold sits above the slowest bow cadence + jitter so a steady shooter never flickers, and a premature retract self-heals — the next shot's START re-raises the aim.
     private readonly object _observedAutoRepeatLock = new();
@@ -2131,6 +2132,7 @@ public sealed class GameSessionData
         // path that normally nulls it.
         CurrentClientNextMeleeCast = null;
         CurrentClientAutoRepeatCast = null;
+        OnAutoRepeatRetry = null;
         ClearAllObservedAutoRepeat();
         return (normalCount, petCount, otherCount);
     }
