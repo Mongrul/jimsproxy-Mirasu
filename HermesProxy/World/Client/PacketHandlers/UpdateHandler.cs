@@ -2737,6 +2737,19 @@ public partial class WorldClient
                 uint spellVisual = GameData.GetSpellVisual((uint)spellId);
                 updateData.UnitData.ChannelData = new UnitChannel(spellId, (int)spellVisual);
 
+                // #383: ritual participants get UNIT_CHANNEL_SPELL but no channel object
+                // from Kronos, so the client has the channel spell yet no portal to face
+                // and never poses. Restore the object from the GO that cast this same
+                // spell's SPELL_GO. Rides the channel lifecycle (cleared on channel end).
+                if (spellId != 0 &&
+                    updateData.UnitData.ChannelObject == null &&
+                    guid != GetSession().GameState.CurrentPlayerGuid &&
+                    GetSession().GameState.ChannelSourceObjectByUnit.TryGetValue(guid, out var ritualSource) &&
+                    ritualSource.SpellId == spellId)
+                {
+                    updateData.UnitData.ChannelObject = ritualSource.SourceObject;
+                }
+
                 if (guid != GetSession().GameState.CurrentPlayerGuid)
                 {
                     var channelSpells = GetSession().GameState.UnitChannelSpells;
@@ -2758,6 +2771,7 @@ public partial class WorldClient
                         else
                         {
                             channelSpells.TryRemove(guid, out _);
+                            GetSession().GameState.ChannelSourceObjectByUnit.TryRemove(guid, out _); // #383
                             if (GetSession().GameState.JimsPlusSideband)
                             {
                                 var chatPkt = new ChatPkt(GetSession(), ChatMessageTypeModern.System,
@@ -4225,7 +4239,17 @@ public partial class WorldClient
             int GAMEOBJECT_TYPE_ID = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_TYPE_ID);
             if (GAMEOBJECT_TYPE_ID >= 0 && updateMaskArray[GAMEOBJECT_TYPE_ID])
             {
-                updateData.GameObjectData.TypeID = (sbyte)updates[GAMEOBJECT_TYPE_ID].Int32Value;
+                sbyte goType = (sbyte)updates[GAMEOBJECT_TYPE_ID].Int32Value;
+
+                // Rookery Egg (175124): vanilla GO type is TRAP (6), which fires Summon Rookery
+                // Whelp on proximity. The 1.14 client won't let you select/spell-target a TRAP, so
+                // the Eggscilloscope (Freeze Rookery Egg 15748) finds no valid target. Present it
+                // as GOOBER (10) — a selectable "use/activate" quest object — so the client can
+                // target it. The whelp-spawn trap is server-side and unaffected. See #387.
+                if (updateData.ObjectData.EntryID == 175124 && goType == 6)
+                    goType = 10;
+
+                updateData.GameObjectData.TypeID = goType;
             }
             int GAMEOBJECT_LEVEL = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_LEVEL);
             if (GAMEOBJECT_LEVEL >= 0 && updateMaskArray[GAMEOBJECT_LEVEL])
