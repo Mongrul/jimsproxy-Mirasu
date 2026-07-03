@@ -2201,7 +2201,10 @@ public partial class WorldClient
             int UNIT_FIELD_TARGET = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_TARGET);
             if (UNIT_FIELD_TARGET >= 0 && updateMaskArray[UNIT_FIELD_TARGET])
             {
-                updateData.UnitData.Target = GetGuidValue(updates, UnitField.UNIT_FIELD_TARGET).To128(GetSession().GameState);
+                WowGuid128 newTarget = GetGuidValue(updates, UnitField.UNIT_FIELD_TARGET).To128(GetSession().GameState);
+                updateData.UnitData.Target = newTarget;
+                // JimsProxy (observed-bow retract): a latched shooter that retargets or drops its target has ended the prior series — lower its bow (a still-firing retarget self-heals on the next shot's START).
+                RetractObservedShooterOnTargetChange(guid, newTarget);
             }
             int UNIT_FIELD_CHANNEL_OBJECT = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_CHANNEL_OBJECT);
             if (UNIT_FIELD_CHANNEL_OBJECT >= 0 && updateMaskArray[UNIT_FIELD_CHANNEL_OBJECT])
@@ -2235,6 +2238,9 @@ public partial class WorldClient
                         healthUpdated ? updates[UNIT_FIELD_HEALTH].Int32Value : existing.Hp,
                         maxHealthUpdated ? updates[UNIT_FIELD_MAXHEALTH].Int32Value : existing.MaxHp));
             }
+            // JimsProxy (observed-bow retract): health hitting 0 is a terminal stop edge — retract any observed shooter aimed at this unit, plus the unit itself if it was a shooter (fallback for deaths PARTY_KILL_LOG doesn't cover: DoTs, non-party kills, environment).
+            if (healthUpdated && updates[UNIT_FIELD_HEALTH].Int32Value <= 0)
+                RetractObservedShootersOnUnitDeath(guid);
             int UNIT_FIELD_LEVEL = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_LEVEL);
             if (UNIT_FIELD_LEVEL >= 0 && updateMaskArray[UNIT_FIELD_LEVEL])
             {
