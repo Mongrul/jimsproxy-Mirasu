@@ -118,6 +118,19 @@ public partial class WorldClient
     {
         MoveUpdate moveUpdate = new MoveUpdate();
         moveUpdate.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        // JimsProxy (out-of-range-ghost): drop a stray movement packet for a unit we just destroyed/out-of-ranged so it can't re-ghost the unit running-in-place on the modern client. Runs BEFORE the observed-bow move edge — a destroyed unit isn't rendered, so its stray move must neither reach the client nor count as a stop edge (a dead latched shooter is retracted by the death edge; an out-of-ranged one despawns and its latch ages out via the sweep).
+        if (moveUpdate.MoverGUID != GetSession().GameState.CurrentPlayerGuid &&
+            GetSession().GameState.WasObjectRecentlyDestroyed(moveUpdate.MoverGUID, out long ghostAgoMs))
+        {
+            if (Framework.Settings.DebugOutput)
+                Framework.Logging.Log.Event("movement.dropped_stray_after_destroy", new
+                {
+                    guid = moveUpdate.MoverGUID.GetCounter(),
+                    ms_since_destroy = ghostAgoMs,
+                    opcode = packet.GetUniversalOpcode(false).ToString(),
+                });
+            return;
+        }
         // JimsProxy (observed-bow retract): a unit physically moving stops its auto-repeat server-side — lower a latched observed shooter's bow on a translational-start move (excludes the local player; turn/facing/heartbeat/stop are not stop edges). A still-firing shooter that briefly steps self-heals on its next shot's START.
         if (moveUpdate.MoverGUID != GetSession().GameState.CurrentPlayerGuid &&
             IsAutoRepeatStoppingMove(packet.GetUniversalOpcode(false)))
@@ -755,6 +768,19 @@ public partial class WorldClient
     void HandleMonsterMove(WorldPacket packet)
     {
         WowGuid128 guid = packet.ReadPackedGuid().To128(GetSession().GameState);
+        // JimsProxy (out-of-range-ghost): drop a stray monster-move for a unit we just destroyed/out-of-ranged so it can't re-ghost moving-in-place on the modern client.
+        if (guid != GetSession().GameState.CurrentPlayerGuid &&
+            GetSession().GameState.WasObjectRecentlyDestroyed(guid, out long ghostAgoMs))
+        {
+            if (Framework.Settings.DebugOutput)
+                Framework.Logging.Log.Event("movement.dropped_stray_after_destroy", new
+                {
+                    guid = guid.GetCounter(),
+                    ms_since_destroy = ghostAgoMs,
+                    opcode = "monster_move",
+                });
+            return;
+        }
         ServerSideMovement moveSpline = new();
 
         if (packet.GetUniversalOpcode(false) == Opcode.SMSG_MONSTER_MOVE_TRANSPORT)
