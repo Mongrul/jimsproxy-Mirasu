@@ -101,6 +101,12 @@ public partial class WorldClient
                 history.CategoryRecoveryTime = packet.ReadInt32();
 
                 histories.Entries.Add(history);
+
+                // JimsProxy (Kronos Chronoboon): capture item on-use cooldowns so HandleShowBank can repaint
+                // a banked boon's sweep — the client gets the spell cooldown now but won't bind it to a bank
+                // item that only becomes visible when the bank opens. Keyed by on-use spell; endTick = now+left.
+                if (history.ItemID != 0 && history.RecoveryTime > 0)
+                    GetSession().GameState.ChronoboonOnUseCooldownEndMs[history.SpellID] = Environment.TickCount64 + history.RecoveryTime;
             }
             SendPacketToClient(histories, Opcode.SMSG_SEND_UNLEARN_SPELLS);
         }
@@ -1614,6 +1620,22 @@ public partial class WorldClient
                 (spell.Cast.CasterGUID, spell.Cast.SpellID);
         }
 
+        // JimsProxy (Kronos Chronoboon): the long on-use cast just completed → NOW re-query the item
+        // (its tooltip changed server-side once the buffs were stored) and let HandleItemQueryResponse
+        // mint the refreshed alias + recreate. Deferred from HandleUseItem because refreshing mid-cast
+        // cancels the cast. Match on (player caster, on-use spell id).
+        if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
+            GetSession().GameState.ChronoboonCastAwaitingGo.TryGetValue((uint)spell.Cast.SpellID, out var chronoPending))
+        {
+            GetSession().GameState.ChronoboonCastAwaitingGo.TryRemove((uint)spell.Cast.SpellID, out _);
+            GetSession().GameState.DynamicItemRefreshPending[chronoPending.Entry] = chronoPending.Guid;
+            WorldPacket chronoQuery = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
+            chronoQuery.WriteUInt32(chronoPending.Entry);
+            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+                chronoQuery.WriteGuid(WowGuid64.Empty);
+            SendPacketToServer(chronoQuery);
+        }
+
         // Cannibalize channel (20578): matching the SPELL_START suppression.
         // No pending-cast entry exists for 20578, so all dequeue/GCD paths
         // below are no-ops. GCD is driven by SPELL_GO 20577 (the wrapper).
@@ -2489,6 +2511,17 @@ public partial class WorldClient
         cooldown.SpellID = packet.ReadUInt32();
         WowGuid64 guid = packet.ReadGuid();
         cooldown.IsPet = guid.GetHighType() == HighGuidType.Pet;
+
+        // JimsProxy (Kronos Chronoboon): drop the on-use cooldown event for the player's Chronoboon
+        // spell — it would briefly paint the cooldown on the OLD item just before the destroy+recreate
+        // (a visible blink). We re-assert the cooldown on the recreated item instead (the dynamic
+        // refresh in HandleItemQueryResponse), so it only ever appears on the new item.
+        if (!cooldown.IsPet &&
+            GetSession().GameState.ChronoboonOnUseSpells.ContainsKey(cooldown.SpellID))
+        {
+            return;
+        }
+
         SendPacketToClient(cooldown);
     }
 
