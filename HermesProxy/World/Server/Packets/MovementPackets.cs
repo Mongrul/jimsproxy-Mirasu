@@ -587,7 +587,7 @@ public class MoveSplineSetFlag : ServerPacket, ISpanWritable
 }
 
 // MIRASU (onyxia-parked-hover-anim): modern hook for the hover-flap animation on a unit that starts/stops hovering mid-life.
-public class SetPlayHoverAnim : ServerPacket
+public class SetPlayHoverAnim : ServerPacket, ISpanWritable
 {
     public SetPlayHoverAnim() : base(Opcode.SMSG_SET_PLAY_HOVER_ANIM, ConnectionType.Instance) { }
 
@@ -596,6 +596,17 @@ public class SetPlayHoverAnim : ServerPacket
         _worldPacket.WritePackedGuid128(UnitGUID);
         _worldPacket.WriteBit(PlayHoverAnim);
         _worldPacket.FlushBits();
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 1; // GUID + flushed bit
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(UnitGUID.Low, UnitGUID.High);
+        writer.WriteBit(PlayHoverAnim);
+        writer.FlushBits();
+        return writer.Position;
     }
 
     public WowGuid128 UnitGUID;
