@@ -717,8 +717,20 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_MOVE_SPLINE_UNSET_FLYING)]
     void HandleSplineMovementMessages(WorldPacket packet)
     {
-        MoveSplineSetFlag spline = new MoveSplineSetFlag(packet.GetUniversalOpcode(false));
+        Opcode universalOpcode = packet.GetUniversalOpcode(false);
+        MoveSplineSetFlag spline = new MoveSplineSetFlag(universalOpcode);
         spline.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        // MIRASU (onyxia-landed-still-hovering): explicit hover toggles drive the registry, else a landed mob keeps hover anim forever.
+        if (universalOpcode == Opcode.SMSG_MOVE_SPLINE_SET_HOVER)
+        {
+            if (GetSession().GameState.KnownHoveringMobs.Add(spline.MoverGUID))
+                Framework.Logging.Log.Event("hover.registry.set", new { guid = spline.MoverGUID.ToString() });
+        }
+        else if (universalOpcode == Opcode.SMSG_MOVE_SPLINE_UNSET_HOVER)
+        {
+            if (GetSession().GameState.KnownHoveringMobs.Remove(spline.MoverGUID))
+                Framework.Logging.Log.Event("hover.registry.cleared", new { guid = spline.MoverGUID.ToString() });
+        }
         SendPacketToClient(spline);
     }
 
