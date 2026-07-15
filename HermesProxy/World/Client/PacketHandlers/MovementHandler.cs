@@ -732,6 +732,19 @@ public partial class WorldClient
                 Framework.Logging.Log.Event("hover.registry.cleared", new { guid = spline.MoverGUID.ToString() });
         }
         SendPacketToClient(spline);
+        // MIRASU (onyxia-parked-hover-anim): mirror hover toggles as PlayHoverAnim + gravity, else a parked flyer stands and bounces once its spline ends.
+        if (universalOpcode is Opcode.SMSG_MOVE_SPLINE_SET_HOVER or Opcode.SMSG_MOVE_SPLINE_UNSET_HOVER)
+        {
+            bool hovering = universalOpcode == Opcode.SMSG_MOVE_SPLINE_SET_HOVER;
+            SetPlayHoverAnim hoverAnim = new SetPlayHoverAnim();
+            hoverAnim.UnitGUID = spline.MoverGUID;
+            hoverAnim.PlayHoverAnim = hovering;
+            SendPacketToClient(hoverAnim);
+            MoveSplineSetFlag gravity = new MoveSplineSetFlag(hovering ? Opcode.SMSG_MOVE_SPLINE_DISABLE_GRAVITY : Opcode.SMSG_MOVE_SPLINE_ENABLE_GRAVITY);
+            gravity.MoverGUID = spline.MoverGUID;
+            SendPacketToClient(gravity);
+            Framework.Logging.Log.Event("hover.anim_synth", new { guid = spline.MoverGUID.ToString(), hovering });
+        }
     }
 
     [PacketHandler(Opcode.SMSG_MOVE_ROOT)]
