@@ -1759,9 +1759,20 @@ public partial class WorldClient
             if (casterIsLocalPlayer && Settings.FormExitStartDeferMs > 0 &&
                 GetSession().GameState.TryConsumeFormExitWindow())
             {
-                // Channeled casts report CastTime == 0 on the wire but never emit a SPELL_GO —
-                // stashing their START would orphan the channel bar. Defer them like cast-time.
-                if (spell.Cast.CastTime > 0 || isChanneled)
+                // #379 channel-brick: a channeled cast emits its SPELL_GO immediately after the START
+                // (not seconds later like a cast-time spell), so deferring the START lands it AFTER its
+                // own GO — the START-crosses-GO case that bricks the client cast state machine (stuck
+                // cast pose, Escape stops opening the game menu, no new cast animation until logout).
+                // Forward channeled STARTs immediately; the minor model-swap sound glitch beats the brick.
+                if (isChanneled)
+                {
+                    SendPacketToClient(spell);
+                    Log.Event("spell.start.form_exit_channel_immediate", new
+                    {
+                        spell_id = spell.Cast.SpellID,
+                    });
+                }
+                else if (spell.Cast.CastTime > 0)
                 {
                     var deferred = new FormExitDeferredStart { SpellId = spell.Cast.SpellID };
                     _formExitDeferredStart = deferred;
