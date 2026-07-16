@@ -175,6 +175,15 @@ public partial class WorldClient
     {
         WowGuid128 guid = packet.ReadGuid().To128(GetSession().GameState);
 
+        // MIRASU (mc-rune-dousing): record MC rune/circle despawns; a destroyed rune must also leave the resync map so a later boss-death synth can't target a stale guid.
+        uint destroyedEntry = guid.GetEntry();
+        if (guid.GetHighType() == HighGuidType.GameObject && ((destroyedEntry >= 176951 && destroyedEntry <= 176957) || (destroyedEntry >= 178187 && destroyedEntry <= 178193)))
+        {
+            GetSession().GameState.McRunesSeen.Remove(destroyedEntry);
+            GetSession().GameState.McCirclesSeen.Remove(destroyedEntry);
+            Log.Event("gameobject.mc_rune_or_circle.destroyed", new { guid = guid.ToString(), entry = destroyedEntry });
+        }
+
         // JimsProxy (mount-and-quest-diagnostics): capture cached entry/displayId BEFORE
         // the cache eviction below so the bundle records what was being destroyed. Used
         // to triage the Aean Swiftriver Outrunner cat-mount persistence bug — testers'
@@ -221,6 +230,105 @@ public partial class WorldClient
         // the fight). The first call emits SMSG_THREAT_CLEAR; the loop emits
         // per-mob updates so the modern client's threat APIs go quiet.
         GetSession().ThreatTracker.OnUnitDestroyed(guid);
+    }
+
+    // MIRASU (mc-rune-dousing): MC rune boss NPC entry -> paired Rune of Warding GO entry (cmangos molten_core.h).
+    private static readonly FrozenDictionary<uint, uint> McRuneEntryByBossEntry = new Dictionary<uint, uint>
+    {
+        [11982] = 176956, // Magmadar -> Rune of Kress
+        [12259] = 176957, // Gehennas -> Rune of Mohn
+        [12057] = 176955, // Garr -> Rune of Blaz
+        [12264] = 176953, // Shazzrah -> Rune of Mazj
+        [12056] = 176952, // Baron Geddon -> Rune of Zeth
+        [11988] = 176954, // Golemagg -> Rune of Theri
+        [12098] = 176951, // Sulfuron -> Rune of Koro
+    }.ToFrozenDictionary();
+
+    private static readonly FrozenDictionary<uint, uint> McBossEntryByRuneEntry =
+        McRuneEntryByBossEntry.ToDictionary(kv => kv.Value, kv => kv.Key).ToFrozenDictionary();
+
+    // MIRASU (mc-rune-dousing): rune entries whose boss life state flipped mid-packet; flushed after the containing update packet is sent so the resync can't outrun a same-packet rune create.
+    private readonly List<uint> _pendingMcRuneResyncs = new();
+
+    // MIRASU (mc-rune-dousing): douseable = not yet doused (no legacy InUse) and paired boss not currently known alive; never-seen bosses count as dead, matching what a 1.12 client could attempt.
+    private bool IsMcRuneDouseable(uint runeEntry, GameObjectFlagsLegacy legacyFlags)
+    {
+        if (legacyFlags.HasFlag(GameObjectFlagsLegacy.InUse))
+            return false;
+        return !(McBossEntryByRuneEntry.TryGetValue(runeEntry, out uint bossEntry)
+            && GetSession().GameState.McBossAlive.TryGetValue(bossEntry, out bool alive) && alive);
+    }
+
+    private void UpdateMcBossLifeState(uint bossEntry, bool alive)
+    {
+        var state = GetSession().GameState;
+        bool wasAlive = state.McBossAlive.TryGetValue(bossEntry, out bool prev) && prev;
+        state.McBossAlive[bossEntry] = alive;
+        if (wasAlive == alive)
+            return;
+        uint runeEntry = McRuneEntryByBossEntry[bossEntry];
+        Log.Event("mc_boss.life_state.changed", new { boss_entry = bossEntry, rune_entry = runeEntry, alive });
+        if (state.McRunesSeen.ContainsKey(runeEntry) && !_pendingMcRuneResyncs.Contains(runeEntry))
+            _pendingMcRuneResyncs.Add(runeEntry);
+    }
+
+    // MIRASU (mc-rune-dousing): re-send a rune's GAMEOBJECT_FLAGS with targetability recomputed after its boss's life state flipped (the server itself never resends rune fields on a kill).
+    private void FlushPendingMcRuneResyncs()
+    {
+        if (_pendingMcRuneResyncs.Count == 0)
+            return;
+        var state = GetSession().GameState;
+        foreach (uint runeEntry in _pendingMcRuneResyncs)
+        {
+            if (!state.McRunesSeen.TryGetValue(runeEntry, out var rune))
+                continue;
+            var legacyFlags = (GameObjectFlagsLegacy)rune.LegacyFlags;
+            var modernFlags = legacyFlags.ToModern();
+            bool douseable = IsMcRuneDouseable(runeEntry, legacyFlags);
+            if (douseable)
+                modernFlags &= ~GameObjectFlagsModern.NotSelectable;
+            UpdateObject updateObject = new UpdateObject(state);
+            ObjectUpdate update = new ObjectUpdate(rune.Guid, UpdateTypeModern.Values, GetSession());
+            update.GameObjectData.Flags = (uint)modernFlags;
+            updateObject.ObjectUpdates.Add(update);
+            SendPacketToClient(updateObject);
+            Log.Event("gameobject.mc_rune.resync", new
+            {
+                guid = rune.Guid.ToString(),
+                rune_entry = runeEntry,
+                douseable = douseable,
+                modern_flags = modernFlags.ToString(),
+            });
+        }
+        _pendingMcRuneResyncs.Clear();
+    }
+
+    // MIRASU (mc-rune-dousing): Kronos respawns the flame circle around already-doused runes on reload (vmangos deletes it only live, at douse time) — destroy such circles client-side so doused runes don't look active to late joiners. Circle entry = rune entry + 1236 (verified for all 7 pairs against vmangos GOHello_go_rune_MC).
+    private void SuppressMcCirclesOnDousedRunes()
+    {
+        var state = GetSession().GameState;
+        if (state.McCirclesSeen.Count == 0)
+            return;
+        List<uint>? suppressed = null;
+        foreach (var (circleEntry, circleGuid) in state.McCirclesSeen)
+        {
+            if (!state.McRunesSeen.TryGetValue(circleEntry - 1236, out var rune) ||
+                !((GameObjectFlagsLegacy)rune.LegacyFlags).HasFlag(GameObjectFlagsLegacy.InUse))
+                continue;
+            UpdateObject updateObject = new UpdateObject(state);
+            updateObject.DestroyedGuids.Add(circleGuid);
+            SendPacketToClient(updateObject);
+            (suppressed ??= new List<uint>()).Add(circleEntry);
+            Log.Event("gameobject.mc_circle.suppressed", new
+            {
+                guid = circleGuid.ToString(),
+                circle_entry = circleEntry,
+                rune_entry = circleEntry - 1236,
+            });
+        }
+        if (suppressed != null)
+            foreach (uint circleEntry in suppressed)
+                state.McCirclesSeen.Remove(circleEntry);
     }
 
     [PacketHandler(Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)]
@@ -489,6 +597,10 @@ public partial class WorldClient
 
         foreach (var auraUpdate in auraUpdates)
             SendPacketToClient(auraUpdate);
+
+        // MIRASU (mc-rune-dousing): after the packet's own updates are out, push rune targetability for any boss life-state edges seen in it, and hide respawned circles around doused runes.
+        FlushPendingMcRuneResyncs();
+        SuppressMcCirclesOnDousedRunes();
     }
 
     public void ReadNearObjectsBlock(WorldPacket packet, object index)
@@ -2284,6 +2396,9 @@ public partial class WorldClient
             // JimsProxy (observed-bow retract): health hitting 0 is a terminal stop edge — retract any observed shooter aimed at this unit, plus the unit itself if it was a shooter (fallback for deaths PARTY_KILL_LOG doesn't cover: DoTs, non-party kills, environment).
             if (healthUpdated && updates[UNIT_FIELD_HEALTH].Int32Value <= 0)
                 RetractObservedShootersOnUnitDeath(guid);
+            // MIRASU (mc-rune-dousing): track MC rune-boss life edges off creature health (creates carry health too).
+            if (healthUpdated && guid.GetHighType() == HighGuidType.Creature && McRuneEntryByBossEntry.ContainsKey(guid.GetEntry()))
+                UpdateMcBossLifeState(guid.GetEntry(), updates[UNIT_FIELD_HEALTH].Int32Value > 0);
             int UNIT_FIELD_LEVEL = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_LEVEL);
             if (UNIT_FIELD_LEVEL >= 0 && updateMaskArray[UNIT_FIELD_LEVEL])
             {
@@ -4186,30 +4301,25 @@ public partial class WorldClient
                 var legacyFlags = (GameObjectFlagsLegacy)legacyRaw;
                 var modernFlags = legacyFlags.ToModern();
 
-                // MC Runes of Warding (176951-176957): vanilla GO_FLAG_NO_INTERACT did NOT block
-                // spell-cursor OPEN_LOCK targeting (Quintessence dousing). Modern NOT_SELECTABLE
-                // does. The Flames Circle linkedTrap GOs (178187-178193) handle gating instead —
-                // they cover the rune until the boss dies. Strip NOT_SELECTABLE so the modern
-                // client can acquire the rune as a Quintessence target. Static INTERACT_COND
-                // also blocks cursor acquisition (verified empirically), so we instead inject
-                // the dynamic LO_NO_INTERACT bit (modern 0x080) — which TrinityCore uses for
-                // depleted gathering nodes (visible-but-inert). Closest analog to vanilla
-                // NO_INTERACT semantics and our best chance to suppress hover/right-click
-                // target-frame acquisition while keeping the OPEN_LOCK cursor working.
-                // Without the NotSelectable strip the modern 1.14 client refuses cursor
-                // acquisition entirely and the cast fails as "Out of range" before any
-                // packet leaves the client. See HermesProxy issue #374.
-                int? entry = updateData.ObjectData.EntryID;
-                bool isMcRune = entry.HasValue && entry.Value >= 176951 && entry.Value <= 176957;
-                bool dynNoInteractInjected = false;
+                // MC Runes of Warding (176951-176957): vanilla GO_FLAG_NO_INTERACT only blocked
+                // right-click; modern NOT_SELECTABLE also blocks spell-cursor OPEN_LOCK targeting
+                // (Quintessence dousing fails "Out of range" client-side). Strip it — and ONLY it:
+                // injecting dyn LO_NO_INTERACT blocks the cast too, and any dynflags-only values
+                // update silently cleared it anyway (the May GM test that said otherwise was
+                // confounded by exactly that). See HermesProxy issue #374.
+                // ObjectData.EntryID is null on values updates (mask lacks OBJECT_FIELD_ENTRY) — derive from guid so the boss-death InUse toggle doesn't re-add NotSelectable.
+                uint entry = updateData.ObjectData.EntryID.HasValue ? (uint)updateData.ObjectData.EntryID.Value : guid.GetEntry();
+                // Transport guids pack different data into the entry bits — require a real GameObject guid so nothing outside the 7 MC runes can alias into the override.
+                bool isMcRune = entry >= 176951 && entry <= 176957 && guid.GetHighType() == HighGuidType.GameObject;
+                // Kronos rune flags are identical for boss-alive and boss-dead-undoused (raw 48); InUse (raw 49) means already doused. Targetability is gated on the paired boss's observed life state (see IsMcRuneDouseable) so a consumable Quintessence can't be wasted on a boss-alive rune.
+                bool mcRuneDouseable = false;
                 if (isMcRune)
                 {
-                    modernFlags &= ~GameObjectFlagsModern.NotSelectable;
-
-                    uint existingDynFlags = updateData.ObjectData.DynamicFlags ?? 0;
-                    updateData.ObjectData.DynamicFlags = existingDynFlags | (uint)GameObjectDynamicFlagsModern.NoInteract;
-                    dynNoInteractInjected = true;
+                    GetSession().GameState.McRunesSeen[entry] = (guid, legacyRaw);
+                    mcRuneDouseable = IsMcRuneDouseable(entry, legacyFlags);
                 }
+                if (mcRuneDouseable)
+                    modernFlags &= ~GameObjectFlagsModern.NotSelectable;
 
                 updateData.GameObjectData.Flags = (uint)modernFlags;
 
@@ -4220,8 +4330,8 @@ public partial class WorldClient
                     legacy_raw = legacyRaw,
                     legacy_flags = legacyFlags.ToString(),
                     modern_flags = modernFlags.ToString(),
-                    mc_rune_override_applied = isMcRune,
-                    dyn_no_interact_injected = dynNoInteractInjected,
+                    is_mc_rune = isMcRune,
+                    mc_rune_override_applied = mcRuneDouseable,
                 });
             }
             int GAMEOBJECT_ROTATION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_ROTATION);
@@ -4281,6 +4391,20 @@ public partial class WorldClient
             if (GAMEOBJECT_STATE >= 0 && updateMaskArray[GAMEOBJECT_STATE])
             {
                 updateData.GameObjectData.State = (sbyte)updates[GAMEOBJECT_STATE].Int32Value;
+
+                // MIRASU (mc-rune-dousing): GO state is the only remaining candidate for distinguishing boss-alive vs boss-dead-undoused on Kronos (flags are identical, circle GO respawns on reload).
+                uint goEntry = guid.GetEntry();
+                // MIRASU (mc-rune-dousing): circles carry no GAMEOBJECT_FLAGS, so register their guid here (state is always present on creates) for the doused-rune suppression flush.
+                if (goEntry >= 178187 && goEntry <= 178193)
+                    GetSession().GameState.McCirclesSeen[goEntry] = guid;
+                if ((goEntry >= 176951 && goEntry <= 176957) || (goEntry >= 178187 && goEntry <= 178193))
+                    Log.Event("gameobject.state.translated", new
+                    {
+                        guid = guid.ToString(),
+                        entry = goEntry,
+                        state = updateData.GameObjectData.State,
+                        is_create = updateData.CreateData != null,
+                    });
             }
             int GAMEOBJECT_DYN_FLAGS = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_DYN_FLAGS);
             if (GAMEOBJECT_DYN_FLAGS >= 0 && updateMaskArray[GAMEOBJECT_DYN_FLAGS])
@@ -4293,6 +4417,18 @@ public partial class WorldClient
 
                 GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)(updates[GAMEOBJECT_DYN_FLAGS].UInt32Value);
                 updateData.ObjectData.DynamicFlags = (oldValue | (uint)flags.CastFlags<GameObjectDynamicFlagsModern>());
+
+                // MIRASU (mc-rune-dousing): MC entries only — Kronos re-sends GO dynflags ~2s per in-range GO, logging all of them bloats the JSONL.
+                uint dynEntry = guid.GetEntry();
+                if ((dynEntry >= 176951 && dynEntry <= 176957) || (dynEntry >= 178187 && dynEntry <= 178193))
+                    Log.Event("gameobject.dynflags.translated", new
+                    {
+                        guid = guid.ToString(),
+                        entry = dynEntry,
+                        legacy_raw = updates[GAMEOBJECT_DYN_FLAGS].UInt32Value,
+                        old_value = oldValue,
+                        new_value = updateData.ObjectData.DynamicFlags,
+                    });
             }
             int GAMEOBJECT_FACTION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_FACTION);
             if (GAMEOBJECT_FACTION >= 0 && updateMaskArray[GAMEOBJECT_FACTION])
