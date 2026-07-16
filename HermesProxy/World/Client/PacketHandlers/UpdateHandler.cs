@@ -208,6 +208,9 @@ public partial class WorldClient
         // JimsProxy (out-of-range-ghost): suppress any stray trailing movement the legacy server broadcasts for this guid after the destroy, until a CreateObject re-creates it.
         GetSession().GameState.MarkObjectRecentlyDestroyed(guid);
 
+        // MIRASU (onyxia-landed-still-hovering): forget hover state on destroy — a missed UNSET_HOVER while out of range must not poison the stable guid; re-approach re-seeds if still airborne.
+        SetHoverState(guid, false, "destroyed", synthesize: false);
+
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
         updateObject.DestroyedGuids.Add(guid);
         SendPacketToClient(updateObject);
@@ -565,6 +568,9 @@ public partial class WorldClient
             GetSession().ThreatTracker.OnUnitDestroyed(guid);
             // JimsProxy (out-of-range-ghost): suppress stray trailing movement for this guid until it is re-created on re-approach.
             GetSession().GameState.MarkObjectRecentlyDestroyed(guid);
+
+            // MIRASU (onyxia-landed-still-hovering): out-of-range is a visibility loss like destroy — forget hover state so a missed UNSET_HOVER can't poison the guid.
+            SetHoverState(guid, false, "out_of_range", synthesize: false);
 
             updateObject.OutOfRangeGuids.Add(guid);
         }
@@ -1044,17 +1050,9 @@ public partial class WorldClient
 
             // Vanilla 1.12 carries hover state via MovementFlagVanilla.FixedZ. Seed our
             // hover registry from it, since some 1.12 cores never populate UNIT_FIELD_HOVERHEIGHT.
-            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180) && moveInfo.Hover &&
-                guid != GetSession().GameState.CurrentPlayerGuid)
-            {
-                if (GetSession().GameState.KnownHoveringMobs.Add(guid))
-                {
-                    Framework.Logging.Log.Event("hover.detect_fixedz_flag", new
-                    {
-                        guid = guid.ToString(),
-                    });
-                }
-            }
+            // No synth: this runs mid-create-parse and the create block already carries the PlayHoverAnim bit.
+            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180) && moveInfo.Hover)
+                SetHoverState(guid, true, "fixedz", synthesize: false);
 
             // MIRASU (swim-mob basketball-bounce 2026-05-23): vanilla NPCs in water
             // carry MovementFlagVanilla.Swimming on their MovementInfo. Modern 1.14 client
@@ -2726,6 +2724,11 @@ public partial class WorldClient
                 else if (Session.GameState.KnownSwimmingMobs.Contains(guid))
                 {
                     updateData.UnitData.AnimTier = 1; // AnimTier.Swim
+                }
+                // MIRASU (onyxia-landed-still-hovering): vanilla never carries AnimTier, so repaint Ground(0) once no registry matches — else the client's cached Hover(2) survives landing.
+                else if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_4_0_8089))
+                {
+                    updateData.UnitData.AnimTier = 0;
                 }
             }
             int UNIT_FIELD_PETNUMBER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_PETNUMBER);
