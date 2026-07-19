@@ -865,6 +865,20 @@ public sealed class GameSessionData
     // synthesize it. Same shape as KnownHoveringMobs above.
     public HashSet<WowGuid128> KnownSwimmingMobs = [];
 
+    // MIRASU (mc-rune-dousing): observed life state of the 7 MC rune bosses (entry -> alive). Kronos sends
+    // identical GO data for a rune before and after its boss dies (flags raw 48, circle GO present, state 1),
+    // so the only usable boss-dead signal is the boss NPC's own health. Never-seen bosses are absent here and
+    // treated as dead (rune targetable) — matching what a 1.12 client could do. WC-thread only.
+    public Dictionary<uint, bool> McBossAlive = new();
+
+    // MIRASU (mc-rune-dousing): last-seen guid + legacy GAMEOBJECT_FLAGS per MC rune entry, so a boss life-state
+    // flip can resynthesize the rune's targetability without waiting for the server to resend rune fields. WC only.
+    public Dictionary<uint, (WowGuid128 Guid, uint LegacyFlags)> McRunesSeen = new();
+
+    // MIRASU (mc-rune-dousing): last-seen guid per MC flame-circle entry (178187-178193). Kronos respawns the
+    // circle around already-doused runes on reload; the proxy destroys those client-side (paired rune has InUse). WC only.
+    public Dictionary<uint, WowGuid128> McCirclesSeen = new();
+
     // JimsProxy (#382 observer lockup): players we observe being CHARMED by another PLAYER
     // (Gnomish Mind Control Cap 13181 = vanilla MOD_CHARM on a player). NPC charmers (raid
     // MCs like Lucifron's Dominate Mind) are excluded — long-stable content, no lockup reports.
