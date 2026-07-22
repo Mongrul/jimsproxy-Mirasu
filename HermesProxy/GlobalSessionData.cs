@@ -755,6 +755,11 @@ public sealed class GameSessionData
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationLeft = [];
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationFull = [];
     public Dictionary<WowGuid128, Dictionary<byte, WowGuid128>> UnitAuraCaster = [];
+    // Wall-clock aura expiry per (unit, spell). Unlike the per-slot caches above this
+    // survives unit destroys AND relogs (carried over in CreateNewGameSessionData), so a
+    // buff re-seen on a group member resumes its real remaining time instead of
+    // restarting at full duration (PallyPower blessing timers after relog/stealth).
+    public Dictionary<(WowGuid128, int), long> UnitAuraExpiryTick = [];
 
     // MIRASU (stack-aura-decrement): last AuraDataInfo emitted for each (unit, slot).
     // Used to detect AURAAPPLICATIONS-quad-only updates where a single slot's app
@@ -933,12 +938,18 @@ public sealed class GameSessionData
         // satisfied the unit-frame name without issuing a fresh CMSG_QUERY_PLAYER_NAME —
         // the proxy then had no entry to fill the inspect Name/Class/Race/Sex fields.
         if (previous != null)
-        {
-            self.CachedPlayers = previous.CachedPlayers;
-            self.PlayerGuildIds = previous.PlayerGuildIds;
-            self.IgnoredPlayers = previous.IgnoredPlayers;
-        }
+            CarryOverRealmScopedCaches(previous, self);
         return self;
+    }
+
+    private static void CarryOverRealmScopedCaches(GameSessionData previous, GameSessionData self)
+    {
+        self.CachedPlayers = previous.CachedPlayers;
+        self.PlayerGuildIds = previous.PlayerGuildIds;
+        self.IgnoredPlayers = previous.IgnoredPlayers;
+        // Buff expiries are wall-clock facts about other units — a /camp doesn't
+        // change when the rogue's blessing runs out.
+        self.UnitAuraExpiryTick = previous.UnitAuraExpiryTick;
     }
 
     /// <summary>
@@ -946,9 +957,12 @@ public sealed class GameSessionData
     /// the GCD hold state machine (issue #43) can construct a bare GameSessionData without
     /// standing up a full GlobalSessionData graph.
     /// </summary>
-    internal static GameSessionData CreateForTesting()
+    internal static GameSessionData CreateForTesting(GameSessionData? previous = null)
     {
-        return new GameSessionData();
+        var self = new GameSessionData();
+        if (previous != null)
+            CarryOverRealmScopedCaches(previous, self);
+        return self;
     }
     
     public uint GetCurrentGroupSize()
@@ -1430,7 +1444,55 @@ public sealed class GameSessionData
         UnitAuraDurationFull.Remove(guid);
         UnitAuraCaster.Remove(guid);
         UnitAuraLastEmitted.Remove(guid);
+        // UnitAuraExpiryTick deliberately survives — it restores remaining buff time
+        // when the unit re-enters view.
         return evicted;
+    }
+
+    public void RecordAuraExpiry(WowGuid128 guid, int spellId, int remainingMs)
+    {
+        if (remainingMs <= 0)
+            return;
+        if (UnitAuraExpiryTick.Count > 4096)
+        {
+            long now = Environment.TickCount64;
+            List<(WowGuid128, int)> expired = [];
+            foreach (var kvp in UnitAuraExpiryTick)
+                if (kvp.Value <= now)
+                    expired.Add(kvp.Key);
+            foreach (var key in expired)
+                UnitAuraExpiryTick.Remove(key);
+        }
+        UnitAuraExpiryTick[(guid, spellId)] = Environment.TickCount64 + remainingMs;
+    }
+
+    public int? TryGetAuraRemainingMs(WowGuid128 guid, int spellId)
+    {
+        if (!UnitAuraExpiryTick.TryGetValue((guid, spellId), out var expiry))
+            return null;
+        long remaining = expiry - Environment.TickCount64;
+        if (remaining <= 0)
+        {
+            UnitAuraExpiryTick.Remove((guid, spellId));
+            return null;
+        }
+        return (int)Math.Min(remaining, int.MaxValue);
+    }
+
+    public void ClearAuraExpiry(WowGuid128 guid, int spellId)
+    {
+        UnitAuraExpiryTick.Remove((guid, spellId));
+    }
+    // A single values update can move an aura to a lower free slot (set at B, clear at
+    // old A, B < A). The clear must not delete the expiry the set just recorded.
+    public bool IsSpellEmittedInAnotherSlot(WowGuid128 guid, byte exceptSlot, uint spellId)
+    {
+        if (!UnitAuraLastEmitted.TryGetValue(guid, out var dict))
+            return false;
+        foreach (var kvp in dict)
+            if (kvp.Key != exceptSlot && kvp.Value.SpellID == spellId)
+                return true;
+        return false;
     }
     public void StoreLastEmittedAura(WowGuid128 guid, byte slot, AuraDataInfo data)
     {

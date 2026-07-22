@@ -3447,6 +3447,12 @@ public partial class WorldClient
                             }
                             else
                             {
+                                // Slot occupant swapped spells without passing through 0 (Y→X in
+                                // one tick) — Y's decayed duration must not be served, or worse
+                                // persisted, under X.
+                                var prevEmitted = GetSession().GameState.GetLastEmittedAura(guid, i);
+                                if (prevEmitted != null && prevEmitted.SpellID != aura.AuraData.SpellID)
+                                    GetSession().GameState.ClearAuraDuration(guid, i);
                                 GetSession().GameState.GetAuraDuration(guid, i, out durationLeft, out durationFull);
                                 // JimsProxy (Cheap-Shot-aura-duration 2026-05-07): mirror the
                                 // SpellHandler refresh path's CSV fallback. On a cold cache (fresh
@@ -3462,6 +3468,25 @@ public partial class WorldClient
                                     int? talentDur = GameData.TryGetTalentDuration(auraSpellId, GetSession().GameState.CurrentPlayerKnownSpells);
                                     durationFull = talentDur ?? GameData.GetAuraSpellDuration(auraSpellId);
                                 }
+                                // Cold per-slot cache on a re-seen unit (relog, stealth
+                                // destroy/recreate) — resume the wall-clock remaining time
+                                // instead of restarting the timer at full duration.
+                                if (durationLeft <= 0 && isCreate &&
+                                    GetSession().GameState.TryGetAuraRemainingMs(guid, (int)aura.AuraData.SpellID) is int persistedMs)
+                                {
+                                    durationLeft = persistedMs;
+                                    if (durationFull < persistedMs)
+                                        durationFull = persistedMs;
+                                    GetSession().GameState.StoreAuraDurationFull(guid, i, durationFull);
+                                    GetSession().GameState.StoreAuraDurationLeft(guid, i, persistedMs, Environment.TickCount);
+                                    Framework.Logging.Log.Event("aura.duration.restored_from_expiry", new
+                                    {
+                                        target_low = guid.GetCounter(),
+                                        slot = i,
+                                        spell_id = aura.AuraData.SpellID,
+                                        remaining_ms = persistedMs,
+                                    });
+                                }
                             }
 
                             if (durationLeft > 0 && durationFull > 0)
@@ -3470,6 +3495,8 @@ public partial class WorldClient
                                 aura.AuraData.Duration = durationFull;
                                 aura.AuraData.Remaining = durationLeft;
                             }
+                            if (!appsOnlyChanged && aura.AuraData.Remaining is int remainingMs && remainingMs > 0)
+                                GetSession().GameState.RecordAuraExpiry(guid, (int)aura.AuraData.SpellID, remainingMs);
                             Framework.Logging.Log.Event("aura.slot.set", new
                             {
                                 target_low = guid.GetCounter(),
@@ -3510,6 +3537,10 @@ public partial class WorldClient
                             // Forward the empty AuraInfo so the client removes the icon, and drop
                             // the cached per-slot state so a later refresh doesn't inherit stale
                             // duration / caster from the previous occupant.
+                            var clearedAura = GetSession().GameState.GetLastEmittedAura(guid, i);
+                            if (clearedAura != null &&
+                                !GetSession().GameState.IsSpellEmittedInAnotherSlot(guid, i, clearedAura.SpellID))
+                                GetSession().GameState.ClearAuraExpiry(guid, (int)clearedAura.SpellID);
                             GetSession().GameState.ClearAuraDuration(guid, i);
                             GetSession().GameState.ClearAuraCaster(guid, i);
                             GetSession().GameState.ClearLastEmittedAura(guid, i);
