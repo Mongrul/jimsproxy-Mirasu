@@ -297,6 +297,14 @@ public sealed class GameSessionData
     // so we always send a valid family, cleared only on explicit pet dismiss.
     public ConcurrentDictionary<WowGuid128, ushort> CachedPetCreatureFamily = new();
     public Dictionary<uint, WowGuid128> CachedPetNumbers = new();
+    // Pet names learned from party member stats, keyed by pet number — lets us answer
+    // pet name queries for out-of-range party pets the legacy server returns empty for.
+    public Dictionary<uint, string> PartyPetNames = new();
+    // Last known pet stats / member level per party member guid. The legacy server only
+    // re-sends fields when they change, but the modern client expires party data it
+    // hasn't seen refreshed — these snapshots get re-attached to forwarded updates.
+    public Dictionary<WowGuid128, World.Server.Packets.PartyMemberPetStats> PartyPetStats = new();
+    public Dictionary<WowGuid128, ushort> PartyMemberLevels = new();
     // Tracks quest ids the proxy has issued its own CMSG_QUERY_QUEST_INFO for.
     public HashSet<uint> ProxyIssuedQuestInfoQueries = new();
     // JimsProxy: client-originated CMSG_QUERY_QUEST_INFO gating. Questie's filter-toggle
