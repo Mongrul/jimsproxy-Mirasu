@@ -686,17 +686,22 @@ public partial class WorldClient
 
         MergeAndRefreshPartyStats(state, updateFlags.HasFlag(GroupUpdateFlagVanilla.PetGuid));
         CachePartyPetName(state.Pet);
-        Log.Event("party.partial_state.translated", new
-        {
-            member_guid = state.AffectedGUID.ToString(),
-            update_flags = (uint)updateFlags,
-            level = state.Level,
-            aura_count = state.Auras?.Count,
-            has_pet = state.Pet != null,
-            pet_guid = state.Pet != null ? state.Pet.NewPetGuid.ToString() : null,
-            pet_name = state.Pet?.NewPetName,
-            pet_health = state.Pet?.Health,
-        });
+        // JimsProxy (review follow-up): partial states stream continuously for every
+        // member (health ticks alone), so an ungated per-packet event is ~10/s of
+        // permanent JSONL in a 40-raid. DebugOutput-gated; pet.name.* stays ungated
+        // (rare, per-edge).
+        if (Framework.Settings.DebugOutput)
+            Log.Event("party.partial_state.translated", new
+            {
+                member_guid = state.AffectedGUID.ToString(),
+                update_flags = (uint)updateFlags,
+                level = state.Level,
+                aura_count = state.Auras?.Count,
+                has_pet = state.Pet != null,
+                pet_guid = state.Pet != null ? state.Pet.NewPetGuid.ToString() : null,
+                pet_name = state.Pet?.NewPetName,
+                pet_health = state.Pet?.Health,
+            });
         SendPacketToClient(state);
     }
 
@@ -1183,21 +1188,24 @@ public partial class WorldClient
         }
         SnapshotPartyStatsFromFull(state, updateFlags.HasFlag(GroupUpdateFlagVanilla.PetGuid), updateFlags.HasFlag(GroupUpdateFlagVanilla.Level));
         CachePartyPetName(state.Pet);
-        Log.Event("party.full_state.translated", new
-        {
-            member_guid = state.MemberGuid.ToString(),
-            update_flags = (uint)updateFlags,
-            status = (ushort)state.StatusFlags,
-            level = state.Level,
-            zone = state.ZoneID,
-            current_health = state.CurrentHealth,
-            max_health = state.MaxHealth,
-            aura_count = state.Auras?.Count ?? 0,
-            has_pet = state.Pet != null,
-            pet_guid = state.Pet != null ? state.Pet.NewPetGuid.ToString() : null,
-            pet_name = state.Pet?.NewPetName,
-            pet_health = state.Pet?.Health,
-        });
+        // JimsProxy (review follow-up): DebugOutput-gated with its partial-state
+        // sibling above — full states are rarer but ride the same raid-scale bursts.
+        if (Framework.Settings.DebugOutput)
+            Log.Event("party.full_state.translated", new
+            {
+                member_guid = state.MemberGuid.ToString(),
+                update_flags = (uint)updateFlags,
+                status = (ushort)state.StatusFlags,
+                level = state.Level,
+                zone = state.ZoneID,
+                current_health = state.CurrentHealth,
+                max_health = state.MaxHealth,
+                aura_count = state.Auras?.Count ?? 0,
+                has_pet = state.Pet != null,
+                pet_guid = state.Pet != null ? state.Pet.NewPetGuid.ToString() : null,
+                pet_name = state.Pet?.NewPetName,
+                pet_health = state.Pet?.Health,
+            });
         SendPacketToClient(state); //MIRASU: Restore missing call — was lost during earlier brace-rearrangement edits. Without this the modern client never gets the initial full-state on party join, so members show as offline/unknown until a PARTIAL_STATE delta arrives (which may never include Status+Health together).     
     }
 
