@@ -3158,7 +3158,7 @@ WowGuid128 charmedBy = GetGuidValue(updates, UnitField.UNIT_FIELD_CHARMEDBY).To1
                         if (spellId != 0)
                         {
                             channelSpells[guid] = spellId;
-                            if (GetSession().GameState.JimsPlusSideband)
+                            if (GetSession().GameState.IsJimsPlusSidebandActive())
                             {
                                 var chatPkt = new ChatPkt(GetSession(), ChatMessageTypeModern.System,
                                     $"JP_CH:S:{guidStr}:{spellId}");
@@ -3169,7 +3169,7 @@ WowGuid128 charmedBy = GetGuidValue(updates, UnitField.UNIT_FIELD_CHARMEDBY).To1
                         {
                             channelSpells.TryRemove(guid, out _);
                             GetSession().GameState.ChannelSourceObjectByUnit.TryRemove(guid, out _); // #383
-                            if (GetSession().GameState.JimsPlusSideband)
+                            if (GetSession().GameState.IsJimsPlusSidebandActive())
                             {
                                 var chatPkt = new ChatPkt(GetSession(), ChatMessageTypeModern.System,
                                     $"JP_CH:X:{guidStr}");
