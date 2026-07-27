@@ -905,13 +905,37 @@ public partial class WorldClient
         response.Name = name;
         if (response.Name.Length == 0)
         {
-            // Legacy server returned empty name (typically a petnumber/guid mismatch in
-            // the CMSG). Still forward the response with Allow=false so the modern client
-            // stops retrying — without a response it spins on the query and the unit
-            // frame stays at "Unknown".
+            // Legacy server returns an empty name when the pet isn't in the player's map
+            // context (e.g. an out-of-range party member's pet). Fall back to the name we
+            // learned from party member stats so the party frame doesn't stay "Unknown".
+            if (GetSession().GameState.PartyPetNames.TryGetValue(petNumber, out var partyName))
+            {
+                response.Allow = true;
+                response.Name = partyName;
+                response.Timestamp = (uint)Time.UnixTime;
+                Log.Event("pet.name_query.party_stats_fallback", new
+                {
+                    pet_number = petNumber,
+                    guid = guid.ToString(),
+                    name = partyName,
+                });
+                SendPacketToClient(response);
+                return;
+            }
+            // No cached name either — still respond with Allow=false so the modern client
+            // stops retrying; without a response it spins and the frame stays "Unknown".
             response.Allow = false;
             SendPacketToClient(response);
             return;
+        }
+
+        // A real name response (e.g. after a rename) must win over the party-stats
+        // snapshot, or the keep-alive partials keep reverting the pet to its old name.
+        GetSession().GameState.PartyPetNames[petNumber] = name;
+        foreach (var petStats in GetSession().GameState.PartyPetStats.Values)
+        {
+            if (petStats.NewPetGuid == guid)
+                petStats.NewPetName = name;
         }
 
         response.Allow = true;

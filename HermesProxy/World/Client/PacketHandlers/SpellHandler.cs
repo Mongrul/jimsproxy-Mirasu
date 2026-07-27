@@ -3560,6 +3560,9 @@ public partial class WorldClient
         aura.AuraData.Flags |= AuraFlagsModern.Duration;
         aura.AuraData.Duration = duration;
         aura.AuraData.Remaining = duration;
+        // Server-authoritative self duration — keep the durable expiry map in sync so a
+        // later relog doesn't restore a stale CSV-guessed value for our own buffs.
+        GetSession().GameState.RecordAuraExpiry(guid, (int)aura.AuraData.SpellID, duration);
 
         //MIRASU: Populate CastUnit and set NoCaster when caster is unknown — same rule as
         //MIRASU: the UpdateHandler aura loop. SMSG_UPDATE_AURA_DURATION arrives during login
@@ -3784,6 +3787,9 @@ public partial class WorldClient
 
                 GetSession().GameState.StoreAuraDurationLeft(target, slot, durationFull, Environment.TickCount);
                 GetSession().GameState.StoreAuraDurationFull(target, slot, durationFull);
+                // Mirror the cache seed above (recast → duration restarts at full), not the
+                // possibly-decayed Remaining, so the durable map never lags the cache.
+                GetSession().GameState.RecordAuraExpiry(target, (int)spellId, durationFull);
             }
         }
 
