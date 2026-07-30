@@ -2481,6 +2481,9 @@ public static partial class GameData
     }
     public static bool IsItemEntryAlias(uint id) => id >= ItemEntryAliasBegin && id < ItemEntryAliasEnd;
 
+    // JimsProxy (Kronos Chronoboon): Kronos's custom Chronoboon Displacer item entry (dynamic server-side tooltip).
+    public const uint KronosChronoboonEntry = 25007;
+
     // JimsProxy (Kronos Chronoboon): item GUID -> current alias entry, applied to the outgoing
     // OBJECT_FIELD_ENTRY in StoreObjectUpdateInternal. STATIC (not per-session GameState) so it SURVIVES
     // a relogin — else the alias map is wiped, the item reverts to base 25007, and the client renders its

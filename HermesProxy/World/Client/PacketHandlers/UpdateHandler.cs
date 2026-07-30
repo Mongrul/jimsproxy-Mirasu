@@ -636,6 +636,14 @@ public partial class WorldClient
         FlushPendingMcRuneResyncs();
         SuppressMcCirclesOnDousedRunes();
 
+        // JimsProxy (Kronos Chronoboon): repaint the remaining on-use sweep AFTER the aliased create is
+        // forwarded — the fresh alias replaced the item the client bound its login cooldown to.
+        if (GetSession().GameState.ChronoboonRepaintPendingGuid is { } chronoRepaintGuid)
+        {
+            GetSession().GameState.ChronoboonRepaintPendingGuid = null;
+            SendChronoboonRemainingCooldown(chronoRepaintGuid);
+        }
+
         // JimsProxy (stuck-logout-stun): fire the cure only after the whole update packet is
         // processed and forwarded. Armed exclusively by DetectStuckLogoutStunAtSelfCreate;
         // one shot per login.
@@ -2199,10 +2207,43 @@ public partial class WorldClient
         {
             updateData.ObjectData.EntryID = updates[OBJECT_FIELD_ENTRY].Int32Value;
 
-            // JimsProxy (Kronos Chronoboon): proactive login-alias removed 2026-06-22 (it regressed the
-            // bag sound). The login bag sound is now delivered statically by the Kronos Item overlay
-            // (CSV/Hotfix/Item1.kronos.csv, ItemGroupSoundsId 24) — a fresh hotfix id the cached client
-            // re-fetches at login via SMSG_AVAILABLE_HOTFIXES, so no login alias is needed for the sound.
+            // JimsProxy (Kronos Chronoboon): login-time tooltip refresh. The boon's state can change where the
+            // proxy can't see it (native 1.12 client session), leaving the 1.14 client rendering a stale cached
+            // template on the next proxied login. Kronos PUSHES the boon's per-player rebuilt template
+            // unsolicited during login — a solicited entry query answers with the BASE template (2026-07-30
+            // log: push=858B supercharged vs query reply=479B base), so the push is the ONLY correct source.
+            // Mint the alias from it BEFORE the substitution below so this very create carries the fresh id —
+            // no destroy+recreate, no extra traffic. Skipped when the existing alias already shows the pushed
+            // state. If the push hasn't arrived yet, park the GUID for HandleItemQueryResponse (ordering
+            // fallback). Once per GUID per login.
+            if (isCreate && objectType == ObjectType.Item &&
+                Framework.Settings.ServerType == Framework.ServerFork.Kronos &&
+                updates[OBJECT_FIELD_ENTRY].Int32Value == (int)GameData.KronosChronoboonEntry &&
+                !GetSession().GameState.ChronoboonLoginRefreshFired.Contains(guid))
+            {
+                var pushedTemplate = GetSession().GameState.ChronoboonLoginPushTemplate;
+                if (pushedTemplate != null)
+                {
+                    GetSession().GameState.ChronoboonLoginRefreshFired.Add(guid);
+                    bool reminted = ChronoboonAliasNeedsRefresh(guid, pushedTemplate);
+                    if (reminted)
+                    {
+                        MintChronoboonAlias(guid, pushedTemplate);
+                        GetSession().GameState.ChronoboonRepaintPendingGuid = guid;
+                    }
+                    Log.Event("item.chronoboon.login_refresh_at_create", new
+                    {
+                        guid = guid.ToString(),
+                        name = pushedTemplate.Name[0],
+                        reminted = reminted,
+                    });
+                }
+                else
+                {
+                    GetSession().GameState.ChronoboonLoginBoonGuids.Add(guid);
+                    Log.Event("item.chronoboon.login_refresh_waiting_push", new { guid = guid.ToString() });
+                }
+            }
 
             // JimsProxy (Kronos Chronoboon alias): present a throwaway alias entry to the client
             // for items whose tooltip is dynamic server-side, so it re-fetches the template (the

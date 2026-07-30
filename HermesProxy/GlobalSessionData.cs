@@ -886,6 +886,28 @@ public sealed class GameSessionData
     // HandleShowBank can repaint their cooldown without scanning the global (all-players) alias map. WC only.
     public HashSet<WowGuid128> ChronoboonItemGuids = new();
 
+    // JimsProxy (Kronos Chronoboon): boon GUIDs whose login-time tooltip refresh already ran this login,
+    // so re-creates of the same item (same real entry) can't re-trigger an infinite refresh loop. WC only.
+    public HashSet<WowGuid128> ChronoboonLoginRefreshFired = new();
+
+    // JimsProxy (Kronos Chronoboon): the per-player boon template Kronos PUSHES unsolicited during login
+    // (a solicited entry query answers with the BASE template — 2026-07-30 log — so this push is the only
+    // correct login-time source). Latest push wins; per-login. WC only.
+    public ItemTemplate? ChronoboonLoginPushTemplate = null;
+
+    // JimsProxy (Kronos Chronoboon): boon GUIDs created before the login push arrived, awaiting refresh
+    // when it does (ordering fallback — observed order is push first, creates after). WC only.
+    public HashSet<WowGuid128> ChronoboonLoginBoonGuids = new();
+
+    // JimsProxy (Kronos Chronoboon): SEND_KNOWN_SPELLS item cooldowns keyed by ITEM entry — store and
+    // restore are different spells, so a spell-keyed lookup misses when the boon's current on-use isn't
+    // the spell that's cooling down. WC only.
+    public Dictionary<uint, (uint SpellId, long EndMs)> LoginItemCooldownByItemEntry = new();
+
+    // JimsProxy (Kronos Chronoboon): boon GUID whose remaining-cooldown repaint must go out AFTER the
+    // current update packet (carrying its aliased create) is forwarded. WC only.
+    public WowGuid128? ChronoboonRepaintPendingGuid = null;
+
     // Mobs we've seen send Flying spline or FixedZ movement flags. Vanilla servers
     // don't populate UNIT_FIELD_HOVERHEIGHT consistently (Twinstar e.g. leaves it at 0),
     // so we need a server-agnostic hover signal. Once a guid lands here, all subsequent
