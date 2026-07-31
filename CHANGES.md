@@ -135,3 +135,11 @@ Guard ordering in HandleCastSpell:
 Value deltas (vanilla): ♀ tauren humanoid 3.29861→2.47396, ♂ 3.01219→2.25914, travel 1.66667→1.33333, NE cat 1.875→1.6875, NE moonkin 2.125→1.9125, scale-buffed players now uniform; bear/dire bear/tauren cat/aquatic/ghost wolf/gnomes/all CMS=1 races byte-identical.
 
 **Verification:** truth-table unit tests (`CollisionHeightTests`, 12 cases incl. field-observed corpus values) — red-run against the extracted upstream formula reproduced the wire values exactly (3.29861/1.66667/1.875) proving faithful extraction, green with the parity formula; full suite 771/771. Field: PTR ♀+♂ tauren at the Tarren Mill door — login/shift/unshift/mount/teleport must all produce identical packets (2.47396 ♀) and identical door behavior; forms and a non-tauren control unchanged on the wire.
+
+## 2026-07-30 — Forward the "quest log is full" error (SMSG_QUEST_LOG_FULL)
+
+**Issue:** Accepting a quest with a full log silently did nothing — vanilla answers with SMSG_QUEST_LOG_FULL (0x195, empty body) and the proxy dropped it (11 corpus sessions in DROPPED-S2C-AUDIT.md, #433; also personally observed — the error simply never appears through the proxy).
+
+**Change:** Forward as modern `QuestLogFull` (0x2A87, empty body, TC-master-sourced) — `QuestPackets.cs` class + `QuestHandler.HandleQuestLogFull`. First s2c translation extracted from the #433 batch under the one-fix-one-PR process.
+
+**Verification:** empty-body layout test; field gate (audit question U4): fill the quest log on PTR, accept one more — the red "Your quest log is full." error must appear. If the 1.14 client turns out to only render this via SMSG_DISPLAY_GAME_ERROR, this slice gets reworked before merge rather than shipping a silent no-op.
