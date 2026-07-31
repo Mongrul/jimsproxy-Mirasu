@@ -913,6 +913,10 @@ public sealed class GameSessionData
     // JimsProxy (Kronos Chronoboon): the per-player boon template Kronos PUSHES unsolicited during login
     // (a solicited entry query answers with the BASE template — 2026-07-30 log — so this push is the only
     // correct login-time source). Latest push wins; per-login. WC only.
+    // Known edge (latest-wins): a solicited BASE-template reply landing while ChronoboonLoginBoonGuids
+    // are parked would re-mint from the base (empty tooltip). Nothing solicits the real entry in the
+    // normal login flow (the client only ever sees alias ids) and a wrong mint self-heals on the next
+    // use/relog — accepted.
     public ItemTemplate? ChronoboonLoginPushTemplate = null;
 
     // JimsProxy (Kronos Chronoboon): boon GUIDs created before the login push arrived, awaiting refresh
