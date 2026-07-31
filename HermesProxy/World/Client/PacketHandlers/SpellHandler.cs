@@ -361,6 +361,19 @@ public partial class WorldClient
                         trailing_hex = ReadTrailingBytesHex(packet),
                     });
 
+                // JimsProxy (#442): this discard used to be INVISIBLE in the JSONL — a rejection
+                // swallowed here is the difference between a leaked queue entry self-healing and
+                // jamming the whole session, and the 2026-07 silent-lockout investigation lost days
+                // to not being able to see it. Ungated: bounded by the rate of own-cast RESULT
+                // packets — rejections plus proc-driven status!=2 results (e.g. Defensive State
+                // 5302, ~2 s cadence in the 2026-07-17 stuck-stun capture) — a few lines a minute
+                // in heavy combat at worst.
+                Log.Event("cast.result.discarded", new
+                {
+                    spell_id = spellId,
+                    status = status,
+                });
+
                 // JimsProxy (engineering-malfunction jam): a discarded CAST_FAILED can be a
                 // server-side substitute (e.g. Goblin Mortar -> Malfunction Explosion 13261) that
                 // preempted a forwarded item-use cast (13237). The item-use then never starts and

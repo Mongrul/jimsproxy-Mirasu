@@ -284,6 +284,11 @@ public partial class WorldClient
         failure.Item[1] = packet.ReadGuid().To128(GetSession().GameState);
         failure.ContainerBSlot = packet.ReadUInt8();
 
+        // JimsProxy (#442): the fallback pairing below must see whether the WIRE carried an empty
+        // GUID — the move-backfill next rewrites failure.Item[0], and gating on the rewritten
+        // value would silently disable the fallback for 2 s after every forwarded bag move.
+        bool wireItem0Empty = failure.Item[0].IsEmpty();
+
         // JimsProxy: Kronos sends invalid-slot rejections (e.g. the modern client's phantom
         // keyring slots 13-32 that the server lacks) with empty item GUIDs, so the client
         // can't unlock the item the player picked up and it stays stuck until relog. Backfill
@@ -304,6 +309,33 @@ public partial class WorldClient
         if (GetSession().GameState.TryDequeueItemCast(failure.Item[0], out var pendingCast))
         {
             GetSession().InstanceSocket.SendCastRequestFailed(pendingCast!, false);
+            Log.Event("cast.item_use_rejected_by_inventory", new
+            {
+                result = (uint)failure.BagResult,
+                dequeued_via = "guid",
+                evicted_spell_id = pendingCast!.SpellId,
+            });
+        }
+        // JimsProxy (#442): Kronos also rejects USE_ITEM itself this way — with EMPTY item GUIDs
+        // (observed live 2026-07-29: a duplicate use straddling its predecessor's SPELL_GO,
+        // rejected with result 23/ItemNotFound, both GUIDs zero). The GUID dequeue above can't
+        // match those, and the orphaned entry then jams HasForwardedPendingCast (every on-GCD
+        // press silently parked until relog/map change) and keeps that item unusable via
+        // HasInFlightNormalCastForSpell. Pair the anonymous rejection with the oldest unresolved
+        // item-use entry instead and release its button silently. See
+        // TryDequeueOldestUnstartedItemCast for the FIFO rationale and the two-items edge.
+        // Gated on the pre-backfill wire GUID (wireItem0Empty), NOT failure.Item[0] — see above.
+        else if (wireItem0Empty &&
+                 GetSession().GameState.TryDequeueOldestUnstartedItemCast(out var orphanedItemCast))
+        {
+            GetSession().InstanceSocket.SendCastRequestFailed(orphanedItemCast!, false, SpellCastResultClassic.DontReport);
+            Log.Event("cast.item_use_rejected_by_inventory", new
+            {
+                result = (uint)failure.BagResult,
+                dequeued_via = "fifo_fallback",
+                evicted_spell_id = orphanedItemCast!.SpellId,
+                evicted_item_guid = orphanedItemCast.ItemGUID.ToString(),
+            });
         }
     }
     [PacketHandler(Opcode.SMSG_INVENTORY_CHANGE_FAILURE, ClientVersionBuild.V2_0_1_6180)]
@@ -341,6 +373,25 @@ public partial class WorldClient
         if (GetSession().GameState.TryDequeueItemCast(failure.Item[0], out var pendingCast))
         {
             GetSession().InstanceSocket.SendCastRequestFailed(pendingCast!, false);
+            Log.Event("cast.item_use_rejected_by_inventory", new
+            {
+                result = (uint)failure.BagResult,
+                dequeued_via = "guid",
+                evicted_spell_id = pendingCast!.SpellId,
+            });
+        }
+        // JimsProxy (#442): same empty-GUID rejection fallback as the vanilla handler above.
+        else if (failure.Item[0].IsEmpty() &&
+                 GetSession().GameState.TryDequeueOldestUnstartedItemCast(out var orphanedItemCast))
+        {
+            GetSession().InstanceSocket.SendCastRequestFailed(orphanedItemCast!, false, SpellCastResultClassic.DontReport);
+            Log.Event("cast.item_use_rejected_by_inventory", new
+            {
+                result = (uint)failure.BagResult,
+                dequeued_via = "fifo_fallback",
+                evicted_spell_id = orphanedItemCast!.SpellId,
+                evicted_item_guid = orphanedItemCast.ItemGUID.ToString(),
+            });
         }
     }
     [PacketHandler(Opcode.SMSG_DURABILITY_DAMAGE_DEATH)]

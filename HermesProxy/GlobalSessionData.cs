@@ -2875,12 +2875,21 @@ public sealed class GameSessionData
 
     /// <summary>
     /// Try to find and dequeue a pending cast by ItemGUID (for item use failures).
-    /// Only matches casts that haven't started yet.
+    /// Only matches casts that haven't started yet. An empty GUID matches nothing —
+    /// anonymous rejections pair via <see cref="TryDequeueOldestUnstartedItemCast"/>.
     /// </summary>
     public bool TryDequeueItemCast(WowGuid128 itemGuid, out ClientCastRequest? cast)
     {
         var pending = new List<ClientCastRequest>();
         cast = null;
+
+        // JimsProxy (#442 review, Issue A): an empty failure GUID must match NOTHING. Normal
+        // CMSG_CAST_SPELL entries leave ItemGUID at default (WowGuid128 is a struct), so the
+        // == below would pair `empty == empty` with the oldest unstarted SPELL entry — a
+        // spurious visible CastFailed for a healthy cast, and the real item orphan surviving
+        // behind the handler's else-if (the #442 lockout, in exactly the raid shape).
+        if (itemGuid.IsEmpty())
+            return false;
 
         lock (PendingCastsLock)
         {
@@ -2897,6 +2906,52 @@ public sealed class GameSessionData
             }
 
             // Re-enqueue non-matching casts
+            foreach (var item in pending)
+            {
+                PendingNormalCasts.Enqueue(item);
+            }
+        }
+
+        return cast != null;
+    }
+
+    /// <summary>
+    /// JimsProxy (#442): dequeue the OLDEST forwarded-but-unstarted item-use cast, regardless of
+    /// item GUID. Fallback for SMSG_INVENTORY_CHANGE_FAILURE rejections that Kronos sends with
+    /// EMPTY item GUIDs (observed live 2026-07-29: a duplicate CMSG_USE_ITEM straddling its
+    /// predecessor's SPELL_GO was rejected with result 23/ItemNotFound and both GUIDs zero), which
+    /// TryDequeueItemCast can't match. Without this the rejected entry is unreapable — unstarted
+    /// (jams HasForwardedPendingCast → every on-GCD press silently parked until relog/map change),
+    /// IsOffGcd (spared by ClearNonStartedNormalCasts), never SPELL_FAILURE-peeked (no watchdog),
+    /// and a permanent HasInFlightNormalCastForSpell match (that item unusable).
+    ///
+    /// FIFO pairing: the rejection is the server's answer to SOME outstanding use; when the GUID
+    /// doesn't identify which, the oldest unresolved one is the correct pair in the single-item
+    /// case (the overwhelmingly common one — the CMSG-side dup guard keeps same-spell entries
+    /// unique). Known edge with TWO different items in flight: an unrelated empty-GUID inventory
+    /// failure inside the one-RTT window can evict the wrong (healthy) entry; its later GO then
+    /// finds no queue match and forwards unmatched — cosmetic, self-limiting, and strictly better
+    /// than the permanent lockout. See issue #442.
+    /// </summary>
+    public bool TryDequeueOldestUnstartedItemCast(out ClientCastRequest? cast)
+    {
+        var pending = new List<ClientCastRequest>();
+        cast = null;
+
+        lock (PendingCastsLock)
+        {
+            while (PendingNormalCasts.TryDequeue(out var current))
+            {
+                if (cast == null && !current.HasStarted && !current.ItemGUID.IsEmpty())
+                {
+                    cast = current;
+                }
+                else
+                {
+                    pending.Add(current);
+                }
+            }
+
             foreach (var item in pending)
             {
                 PendingNormalCasts.Enqueue(item);
