@@ -42,10 +42,42 @@ public partial class WorldClient
             // All handshake bookkeeping lives in GameSessionData.ApplyLocalPlayerAttackStop
             // (pure, unit-tested). We only own the socket side: forwarding a stop that was
             // deferred behind an in-flight swing handshake.
-            if (state.ApplyLocalPlayerAttackStop(rawVictim) == PlayerAttackStopOutcome.FlushDeferredStop)
+            var pinnedBefore = state.CurrentAttackTarget;
+            var outcome = state.ApplyLocalPlayerAttackStop(rawVictim);
+
+            if (outcome == PlayerAttackStopOutcome.FlushDeferredStop)
             {
                 WorldPacket stopPacket = new WorldPacket(Opcode.CMSG_ATTACK_STOP);
                 SendPacketToServer(stopPacket, Opcode.MSG_NULL_ACTION);
+            }
+            else if (outcome == PlayerAttackStopOutcome.ClearRejectedHandshake &&
+                     rawVictim == WowGuid64.Empty)
+            {
+                // TEMP-DIAG (#464 follow-up) — REMOVE once the trigger has a clean repro.
+                // Until then this measures how often the condition fires during DEV testing;
+                // delete this block, LastAttackSwingSentTick, and its stamp in
+                // Server/PacketHandlers/CombatHandler.cs together.
+                //
+                // JimsProxy (#464 follow-up): the exact condition #464 fixes — the legacy server
+                // refused our swing with a victim-less SMSG_ATTACKSTOP while the swing handshake
+                // was still in flight. Before #464 this pinned CurrentAttackTarget forever and the
+                // de-dupe guard ate every retry, so the player could never auto-attack that unit
+                // again (wire-confirmed 2026-08-12: a full fight with zero player swings).
+                //
+                // DebugOutput-gated per the diagnostics policy: this is a dev-testing
+                // instrument (devs run DebugOutput on), not field telemetry. ms_since_swing
+                // ~200ms = the charge race; a large value would be a different animal.
+                if (Framework.Settings.DebugOutput)
+                {
+                    Framework.Logging.Log.Event("combat.attack_stop_empty_victim_cleared", new
+                    {
+                        pinned_victim_low = pinnedBefore.GetCounter(),
+                        ms_since_swing = state.LastAttackSwingSentTick != 0
+                            ? Environment.TickCount64 - state.LastAttackSwingSentTick
+                            : -1,
+                        now_dead = attack.NowDead,
+                    });
+                }
             }
         }
 
