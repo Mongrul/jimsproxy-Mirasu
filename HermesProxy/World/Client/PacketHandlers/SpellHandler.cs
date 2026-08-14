@@ -150,16 +150,9 @@ public partial class WorldClient
         // so the outbound CMSG_CAST_SPELL guard sees the actual server-side known set.
         // Without this, a rank-up replaces the action-bar binding but the proxy still
         // thinks the old rank is known and never tracks the new one.
-        var knownSpellsSuperseded = GetSession().GameState.CurrentPlayerKnownSpells;
-        knownSpellsSuperseded.Remove(supercededId);
-        knownSpellsSuperseded.Add(spellId);
-        // Ban defense: clear pending state on rank-upgrade confirmation.
-        if (GetSession().GameState.PendingTrainerBuySpellId == spellId
-            || GetSession().GameState.PendingTrainerBuySpellId == supercededId)
-        {
-            GetSession().GameState.PendingTrainerBuySpellId = 0u;
-            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
-        }
+        // Ban defense: the server really removed the old rank — drop it and confirm (clear
+        // without restore) any matching pending speculative removal.
+        GetSession().GameState.ApplySupercededSpellKnownState(spellId, supercededId);
         // Clear in-flight trainer-buy on rank-upgrade response too — match on either
         // the new or the superseded id so we don't strand stale in-flight state.
         if (GetSession().GameState.InFlightTrainerBuySpellId == spellId
@@ -178,15 +171,18 @@ public partial class WorldClient
         LearnedSpells spells = new LearnedSpells();
         uint spellId = packet.ReadUInt32();
         spells.Spells.Add(spellId);
-        // JimsProxy (cast-block-unknown-spells): track newly-learned spells so the
-        // outbound CMSG_CAST_SPELL guard doesn't false-positive on trainer/talent grants.
-        GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
-        // Ban defense: clear pending state on confirmed learn — predecessor
-        // stays removed (server actually removed it, proxy state now matches).
-        if (GetSession().GameState.PendingTrainerBuySpellId == spellId)
+        // JimsProxy (cast-block-unknown-spells + racial-downrank restore): records the learn and,
+        // for the pending trainer buy, restores the speculatively-removed predecessor — a learn
+        // with no SUPERCEDED_SPELLS means the server kept the lower rank (see the op's doc for
+        // the supersede-ordering and no-response ban-safety analysis).
+        uint restoredPredecessor = GetSession().GameState.ApplyLearnedSpellKnownState(spellId);
+        if (restoredPredecessor != 0)
         {
-            GetSession().GameState.PendingTrainerBuySpellId = 0u;
-            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+            Log.Event("spell.trainer_buy.predecessor_restored_on_learn", new
+            {
+                learned_spell_id = spellId,
+                predecessor_spell_id = restoredPredecessor,
+            });
         }
         // Clear in-flight trainer-buy on confirmed learn so the next CMSG
         // for the same spell isn't dropped as a stale duplicate.
