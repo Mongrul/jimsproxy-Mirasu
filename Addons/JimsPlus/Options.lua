@@ -164,6 +164,11 @@ y = y - 28
 local cbMoonkinSound = CreateCheckbox(panel, y,
     "Moonkin Form sound  |cFF888888(Druid only)|r",
     "Gives Moonkin Form a distinct transformation sound instead\nof reusing the Bear Form sound.\n\nOnly affects Druid characters.")
+y = y - 28
+
+local cbBowSheathe = CreateCheckbox(panel, y,
+    "Show 2H weapon on back with a bow",
+    "Fixes a 1.14 client bug where a sheathed two-handed weapon\n(and your quiver) disappears from your back after combat while\na bow is equipped (guns and crossbows are unaffected).\n\nYour character puts the bow away a few seconds after combat\nends; if the client sheathes on its own first, the addon instantly\nre-sheathes to restore the models.\n\nTakes effect immediately.")
 y = y - 40
 
 ---------------------------------------------------------------------------
@@ -219,6 +224,7 @@ local function RefreshCheckboxes()
     local db = namespace.db or JimsPlusDB or {}
     cbTooltipFix:SetChecked(db.tooltipFix == true)
     cbMoonkinSound:SetChecked(db.moonkinSound ~= false)
+    cbBowSheathe:SetChecked(db.bowSheatheFix ~= false)
     cbBagSort:SetChecked(db.bagSortOrder ~= false)
 
     local cdb = JimsPlusCastbars and JimsPlusCastbars.db
@@ -260,6 +266,15 @@ cbMoonkinSound:SetScript("OnClick", function(self)
         namespace.db.moonkinSound = enabled
     end
     print("|cFF00FF00[JimsPlus]|r Moonkin Form sound " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
+end)
+
+-- JimsProxy (bow sheathe fix): purely addon-side (BowSheatheFix.lua re-sheathe nudge), read live from db
+cbBowSheathe:SetScript("OnClick", function(self)
+    local enabled = self:GetChecked() and true or false
+    if namespace.db then
+        namespace.db.bowSheatheFix = enabled
+    end
+    print("|cFF00FF00[JimsPlus]|r Bow 2H-sheathe fix " .. (enabled and "enabled" or "disabled") .. ".")
 end)
 
 cbBagSort:SetScript("OnClick", function(self)
