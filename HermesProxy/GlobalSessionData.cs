@@ -3299,6 +3299,73 @@ public sealed class GameSessionData
     {
         return RealSpellToLearnSpell.TryGetValue(spellId, out var learnSpell) ? learnSpell : spellId;
     }
+
+    /// <summary>Ban defense (Kronos IsInWorld race): speculatively removes the predecessor rank
+    /// at CMSG_TRAINER_BUY_SPELL, mirroring Kronos's server-side RemoveSpell(prev) that can run
+    /// without any notification packet. Returns whether the predecessor was actually in the set.
+    /// Pure data operation — no socket dependency, easy to unit-test.</summary>
+    public bool ApplyTrainerBuyPredecessorRemoval(uint realSpellId, uint predecessor)
+    {
+        bool removed = CurrentPlayerKnownSpells.Remove(predecessor);
+        PendingTrainerBuySpellId = realSpellId;
+        PendingTrainerBuyRemovedPredecessor = removed ? predecessor : 0u;
+        return removed;
+    }
+
+    /// <summary>SMSG_LEARNED_SPELL bookkeeping: records the learn; a confirmed learn for the
+    /// pending trainer buy restores the speculatively-removed predecessor — no SUPERCEDED_SPELLS
+    /// means the server KEPT the lower rank (downrankable chain, e.g. Shadowguard). Returns the
+    /// restored predecessor id, or 0. A real supersede chain still ends removed in either arrival
+    /// order: SUPERCEDED-first clears the pending state so nothing restores; LEARNED-first
+    /// restores transiently and SUPERCEDED's unconditional remove wins. The no-response Kronos
+    /// race (the autoban this defense exists for) confirms nothing, so its removal stands.</summary>
+    public uint ApplyLearnedSpellKnownState(uint spellId)
+    {
+        CurrentPlayerKnownSpells.Add(spellId);
+        if (PendingTrainerBuySpellId != spellId)
+            return 0u;
+        uint restored = PendingTrainerBuyRemovedPredecessor;
+        if (restored != 0)
+            CurrentPlayerKnownSpells.Add(restored);
+        PendingTrainerBuySpellId = 0u;
+        PendingTrainerBuyRemovedPredecessor = 0u;
+        return restored;
+    }
+
+    /// <summary>SMSG_SUPERCEDED_SPELLS bookkeeping: the server really removed the old rank, so
+    /// the proxy's view drops it and any matching pending speculative removal is confirmed —
+    /// cleared WITHOUT restoring.</summary>
+    public void ApplySupercededSpellKnownState(uint newSpellId, uint supercededId)
+    {
+        CurrentPlayerKnownSpells.Remove(supercededId);
+        CurrentPlayerKnownSpells.Add(newSpellId);
+        if (PendingTrainerBuySpellId == newSpellId || PendingTrainerBuySpellId == supercededId)
+        {
+            PendingTrainerBuySpellId = 0u;
+            PendingTrainerBuyRemovedPredecessor = 0u;
+        }
+    }
+
+    /// <summary>SMSG_TRAINER_BUY_FAILED bookkeeping: an explicit rejection means the server never
+    /// removed the predecessor — restore it when the failure names the pending buy (real id or
+    /// learn-wrapper id). Returns the restored predecessor id, or 0. Preserves the shipped
+    /// fail-safe: a non-matching failure clears the pending state WITHOUT restoring (the removal
+    /// stands, the cast guard keeps blocking — over-blocking is recoverable, a ban is not).</summary>
+    public uint ApplyTrainerBuyFailedKnownState(uint failedSpellId)
+    {
+        if (PendingTrainerBuySpellId == 0 || PendingTrainerBuyRemovedPredecessor == 0)
+            return 0u;
+        uint restored = 0u;
+        if (failedSpellId == PendingTrainerBuySpellId ||
+            failedSpellId == GetLearnSpellFromRealSpell(PendingTrainerBuySpellId))
+        {
+            restored = PendingTrainerBuyRemovedPredecessor;
+            CurrentPlayerKnownSpells.Add(restored);
+        }
+        PendingTrainerBuySpellId = 0u;
+        PendingTrainerBuyRemovedPredecessor = 0u;
+        return restored;
+    }
     public void StoreCreatureClass(uint entry, Class classId)
     {
         CreatureClasses[entry] = classId;
