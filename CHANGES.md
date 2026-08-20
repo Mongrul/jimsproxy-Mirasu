@@ -13,6 +13,27 @@ A fork of [WowLegacyCore/HermesProxy](https://github.com/WowLegacyCore/HermesPro
 
 ---
 
+## 2026-08-20 — Unlock the shop's epic Reins of the Nightsaber (12303)
+
+**Issue:** an undead player could not use the shop-bought **Reins of the Nightsaber (12303)**.
+PR #280 unlocked 8627 — same display name, but NOT the item the shop sells — and missed 12303,
+which stayed AllowableRace=1101 (Alliance-only) in both hotfix files. Wire analysis (30 beta.4
+sessions) confirmed the proxy delivers this lock to every client at every login (the 42597 client
+re-requests the full custom hotfix set per login), so the mount was blocked in every normal
+session; the player's occasional "it worked" sessions are consistent with the hotfix failing to
+apply that session and the client falling back to its more permissive native data. Audit against
+the shop page's real item IDs confirmed 12303 is the ONLY sold mount still locked; the other 15
+were correctly unlocked by #280 (whose delivery was verified clean on the wire, e.g. 8628 served
+as -1 in 30/30 sessions).
+
+**Change:** `CSV/Hotfix/ItemSparse1.csv` + `CSV/Hotfix/ItemSparse1.kronos.csv` — 12303
+AllowableRace 1101 → -1. Data-only; no code change; no hotfix IDs shift.
+
+**Verification:** full suite green; wire captures prove the bands this row rides are served every
+login. Field gate: the reporting undead uses their Reins of the Nightsaber on a current build.
+
+---
+
 ## Dispatch & Hook Points Map
 
 This section documents where in the HermesProxy source the packet dispatch happens and where we've added instrumentation. Updated as we find each site.
