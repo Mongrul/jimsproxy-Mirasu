@@ -765,6 +765,21 @@ public sealed class GameSessionData
         }
     }
 
+    // JimsProxy (fifo-terminator-symmetry): per-spell STARTED twin of the check above.
+    public bool HasStartedPendingCastForSpell(uint spellId)
+    {
+        lock (PendingCastsLock)
+        {
+            foreach (var item in PendingNormalCasts)
+            {
+                if (item.HasStarted &&
+                    (item.SpellId == spellId || (item.LegacySpellId != 0 && item.LegacySpellId == spellId)))
+                    return true;
+            }
+            return false;
+        }
+    }
+
     // JimsProxy: proxy→server RTT measurement for adaptive GCD fire offset.
     private readonly object _rttLock = new();
     private long _lastPingSendTickMs;
