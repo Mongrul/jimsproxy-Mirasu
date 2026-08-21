@@ -654,6 +654,28 @@ public partial class WorldClient
                 }
             }
         }
+        // JimsProxy (fifo-terminator-symmetry): no pending entry at all — if the FIFO holds a
+        // forwarded START CastID, this failure is that orphan cast's terminator (its pending
+        // entry was evicted before the START arrived). POP the entry and forward the failure on
+        // the popped CastID so the client closes the bar it actually opened and the FIFO head
+        // stays aligned for later same-spell casts (the mining cast-bar-overrun wedge).
+        else if (GetSession().GameState.TryPopForwardedStartCastId(spellId, out var orphanFailCastId))
+        {
+            CastFailed orphanFailed = new();
+            orphanFailed.SpellID = spellId;
+            orphanFailed.SpellXSpellVisualID = GameData.GetSpellVisual(spellId);
+            orphanFailed.Reason = LegacyVersion.ConvertSpellCastResult(reason);
+            orphanFailed.CastID = orphanFailCastId;
+            orphanFailed.FailedArg1 = arg1;
+            orphanFailed.FailedArg2 = arg2;
+            SendPacketToClient(orphanFailed);
+            Log.Event("cast.orphan_start_failure_resolved", new
+            {
+                spell_id = spellId,
+                reason_id = reason,
+                cast_id = orphanFailCastId.ToString(),
+            });
+        }
     }
 
     [PacketHandler(Opcode.SMSG_PET_CAST_FAILED, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
@@ -1248,6 +1270,8 @@ public partial class WorldClient
         // JimsProxy (#484): see HandleSpellFailedOther — false when the terminator consumed
         // a superseded predecessor's tracked entry; gates the interrupt-kit synthesis.
         bool failurePairedLiveCast = true;
+        // JimsProxy (fifo-terminator-symmetry): forwarded failure CastID pinned from the FIFO front.
+        bool orphanFifoPinned = false;
 
         // JimsProxy: Twinstar's Spell::SendInterrupted hardcodes the wire reason
         // byte to vanilla 0 (= classic AffectingCombat=1 after translation). For
@@ -1411,6 +1435,15 @@ public partial class WorldClient
                 castId = petCastId;
                 foundActiveCastId = true;
             }
+            // JimsProxy (fifo-terminator-symmetry): local-player failure with no pending entry —
+            // PEEK the FIFO (the trailing CAST_FAILED pops) so the forwarded failure carries the
+            // orphan START's CastID the client is actually tracking, not a re-minted seed.
+            else if (casterIsLocalPlayer &&
+                     GetSession().GameState.TryPeekForwardedStartCastId(spellId, out var orphanStartCastId))
+            {
+                castId = orphanStartCastId;
+                orphanFifoPinned = true;
+            }
             else
                 castId = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, spellId, spellId + casterUnit.GetCounter());
             spellVisual = GameData.GetSpellVisual(spellId);
@@ -1427,6 +1460,7 @@ public partial class WorldClient
                     spell_id = spellId,
                     reason,
                     pending_queue_depth = GetSession().GameState.PendingNormalCasts.Count,
+                    fifo_pinned = orphanFifoPinned,
                 });
         }
 
@@ -2151,8 +2185,24 @@ public partial class WorldClient
             GetSession().HealCommBridge.OnLocalPlayerSpellCompleted((uint)spell.Cast.SpellID);
         }
 
-        // Dequeue completed cast (queue-based, FIFO order)
+        // JimsProxy (fifo-terminator-symmetry): a FIFO entry with NO started pending cast but a
+        // fresh UNSTARTED press queued means this GO completes the orphan START (one in-flight
+        // started cast per player), not the press — stamp it from the FIFO and leave the press
+        // pending for its own terminator instead of letting the dequeue below steal its entry.
         if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
+            GetSession().GameState.HasNonStartedPendingCastForSpell((uint)spell.Cast.SpellID) &&
+            !GetSession().GameState.HasStartedPendingCastForSpell((uint)spell.Cast.SpellID) &&
+            GetSession().GameState.TryPopForwardedStartCastId((uint)spell.Cast.SpellID, out var orphanGoCastId))
+        {
+            spell.Cast.CastID = orphanGoCastId;
+            Log.Event("cast.go.orphan_castid_recovered", new
+            {
+                spell_id = spell.Cast.SpellID,
+                recovered_cast_id = orphanGoCastId.ToString(),
+            });
+        }
+        // Dequeue completed cast (queue-based, FIFO order)
+        else if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
             GetSession().GameState.TryDequeuePendingNormalCast((uint)spell.Cast.SpellID, out var pendingCast))
         {
             spell.Cast.CastID = pendingCast!.ServerGUID;
