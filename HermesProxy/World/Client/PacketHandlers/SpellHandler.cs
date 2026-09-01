@@ -3785,10 +3785,7 @@ public partial class WorldClient
         // JimsProxy (#244 emote channel guard): record our own channel window
         // so text-emote forwards hold off while it is open.
         if (channel.CasterGUID == GetSession().GameState.CurrentPlayerGuid)
-        {
-            GetSession().GameState.LocalChannelSpellId = channel.Duration > 0 ? channel.SpellID : 0;
-            GetSession().GameState.LocalChannelEndTickMs = Environment.TickCount64 + channel.Duration;
-        }
+            GetSession().GameState.OnLocalChannelStart(channel.SpellID, channel.Duration);
         SendPacketToClient(channel);
     }
 
@@ -3801,10 +3798,26 @@ public partial class WorldClient
         else
             channel.CasterGUID = GetSession().GameState.CurrentPlayerGuid;
         channel.TimeRemaining = packet.ReadInt32();
-        // JimsProxy (#244 emote channel guard): the server ends a channel by
-        // sending an update with no time remaining — close our window early.
         if (channel.TimeRemaining <= 0 && channel.CasterGUID == GetSession().GameState.CurrentPlayerGuid)
-            GetSession().GameState.LocalChannelSpellId = 0;
+        {
+            var gameState = GetSession().GameState;
+            // JimsProxy (fishing recast wedge 2026-09-01): a zero-update this early into a
+            // freshly recast fishing channel is the PREVIOUS bobber's teardown tail —
+            // forwarding it would kill the channel we just opened. See
+            // GameSessionData.ConsumeLocalChannelZeroUpdate.
+            if (gameState.ConsumeLocalChannelZeroUpdate())
+            {
+                Log.Event("spell.channel.stale_zero_update_dropped", new
+                {
+                    spell_id = gameState.LocalChannelSpellId,
+                    ms_since_channel_start = Environment.TickCount64 - gameState.LocalChannelStartTickMs,
+                });
+                return;
+            }
+            // JimsProxy (#244 emote channel guard): the server ends a channel by
+            // sending an update with no time remaining — close our window early.
+            gameState.LocalChannelSpellId = 0;
+        }
         SendPacketToClient(channel);
     }
 

@@ -1084,6 +1084,10 @@ public partial class WorldSocket
             SendCastFailedWithoutPrepare(heldCastTimeDrop);
         }
 
+        // JimsProxy (fishing recast wedge): a client-initiated cancel makes any
+        // following zero channel-update genuine — don't let the guard eat it.
+        GetSession().GameState.RecordLocalChannelBreakAction();
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_CAST);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt8(0);
@@ -1097,6 +1101,8 @@ public partial class WorldSocket
         {
             spell_id = cast.SpellID,
         });
+        // JimsProxy (fishing recast wedge): see HandleCancelCast.
+        GetSession().GameState.RecordLocalChannelBreakAction();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_CHANNELLING);
         packet.WriteInt32(cast.SpellID);
         SendPacketToServer(packet);
