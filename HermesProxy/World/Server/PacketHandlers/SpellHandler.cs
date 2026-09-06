@@ -141,6 +141,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_CAST_SPELL)]
     void HandleCastSpell(CastSpell cast)
     {
+        // JimsProxy (fishing recast wedge): casting anything ends a running channel on the
+        // server, so a zero-update that follows is genuine — stand the guard down.
+        GetSession().GameState.RecordLocalChannelBreakAction();
+
         // JimsProxy (cast-block-unknown-spells): vanilla 1.12 server autobans clients that
         // emit CMSG_CAST_SPELL for spells they don't know. Native 1.12 clients block this
         // locally and never send the packet; modern Classic 1.14 clients send it through to
@@ -1085,7 +1089,7 @@ public partial class WorldSocket
         }
 
         // JimsProxy (fishing recast wedge): a client-initiated cancel makes any
-        // following zero channel-update genuine — don't let the guard eat it.
+        // following zero channel-update genuine — don't let the guard hold it.
         GetSession().GameState.RecordLocalChannelBreakAction();
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_CAST);

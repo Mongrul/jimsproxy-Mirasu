@@ -73,7 +73,7 @@ public partial class WorldSocket
 
         // JimsProxy (fishing recast wedge): using a GO (e.g. clicking your own
         // bobber early) can legitimately end a channel — record it so the
-        // stale-zero-update guard in HandleSpellChannelUpdate stands down.
+        // held-zero-update guard in HandleSpellChannelUpdate stands down.
         GetSession().GameState.RecordLocalChannelBreakAction();
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_GAME_OBJ_USE);

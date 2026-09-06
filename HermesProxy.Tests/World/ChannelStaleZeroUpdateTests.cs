@@ -1,51 +1,141 @@
-using System;
 using HermesProxy;
 using HermesProxy.World;
+using HermesProxy.World.Objects;
+using HermesProxy.World.Server.Packets;
 using Xunit;
+using Disposition = HermesProxy.GameSessionData.LocalChannelZeroUpdateDisposition;
 
 namespace HermesProxy.Tests.World;
 
-// JimsProxy (fishing recast wedge 2026-09-01): state tests for the stale channel
-// zero-update guard in GameSessionData. Recasting fishing while the previous bobber
-// still exists server-side (its teardown lags the channel close by ~2s) makes
-// mangos-family servers tear the old bobber down on the tick AFTER the new channel
-// starts; the teardown's trailing MSG_CHANNEL_UPDATE(0) lands ~100ms behind the new
-// MSG_CHANNEL_START and would end the channel just opened on the modern client. The
-// guard arms only when a fishing channel starts moments after the previous fishing
-// channel closed, drops at most one zero-update, only within the post-start window,
-// and stands down on any client-side channel-breaking action.
+// JimsProxy (fishing recast wedge 2026-09-01): state tests for the held channel
+// zero-update guard in GameSessionData. A fishing bobber outlives its channel by ~2s,
+// and a mangos-family bobber timeout finishes whatever channel the player has at that
+// moment — so a recast inside that window has its NEW channel ended by the server
+// ~100ms after it opened while the new bobber lives on. The guard keeps the client's
+// channel open so the bobber can be waited out: it arms only when the previous bobber
+// is still in the object cache at the new CHANNEL_START, holds the zero-update, and
+// drops it only when that bobber's destroy (or SMSG_FISH_NOT_HOOKED) lands in the same
+// read pass; a socket drain releases anything still held as genuine.
 public class ChannelStaleZeroUpdateTests
 {
+    static ChannelStaleZeroUpdateTests()
+    {
+        // ServerPacket construction resolves opcodes through ModernVersion, whose
+        // static ctor needs a real build — same guard every packet-constructing
+        // test class uses so the class also runs green in isolation.
+        if (global::Framework.Settings.ClientBuild == HermesProxy.Enums.ClientVersionBuild.Zero)
+            global::Framework.Settings.ClientBuild = HermesProxy.Enums.ClientVersionBuild.V1_14_2_42597;
+    }
+
     private const uint FishingArtisan = 18248;
     private const uint MindFlay = 15407;
     private const uint ChannelDurationMs = 30000;
-    private const long T0 = 1_000_000;
+    private static readonly WowGuid128 OldBobber = new(0x1F00_0000_0000_0001, 0x0000_0000_0000_0001);
+    private static readonly WowGuid128 NewBobber = new(0x1F00_0000_0000_0002, 0x0000_0000_0000_0002);
+    private static readonly WowGuid128 SomeMob = new(0xF130_0000_0000_0003, 0x0000_0000_0000_0003);
 
     private static GameSessionData NewSession() => GameSessionData.CreateForTesting();
 
-    /// <summary>First channel runs its full course and closes; player recasts inside
-    /// the bobber-teardown lag. Returns the recast's start tick.</summary>
-    private static long RecastIntoTeardownWindow(GameSessionData session, uint spellId = FishingArtisan)
+    private static SpellChannelUpdate ZeroUpdate() => new() { TimeRemaining = 0 };
+
+    /// <summary>The server created a bobber for us (UPDATE_OBJECT create block).</summary>
+    private static void BobberCreated(GameSessionData session, WowGuid128 guid)
     {
-        session.OnLocalChannelStartAtTick(spellId, ChannelDurationMs, T0);
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(T0 + ChannelDurationMs)); // natural end forwards
-        long recastTick = T0 + ChannelDurationMs + 1500; // old bobber still exists ~2s more
-        session.OnLocalChannelStartAtTick(spellId, ChannelDurationMs, recastTick);
-        return recastTick;
+        session.ObjectCacheLegacy[guid] = [];
+        session.LocalFishingBobberGuid = guid;
+    }
+
+    /// <summary>SMSG_DESTROY_OBJECT for a guid, as HandleDestroyObject drives the guard.</summary>
+    private static bool Destroyed(GameSessionData session, WowGuid128 guid)
+    {
+        session.ObjectCacheLegacy.Remove(guid);
+        return session.OnFishingBobberTeardownAnchor(guid);
+    }
+
+    /// <summary>The captured wedge's setup: first cast's bobber still alive when the
+    /// recast's CHANNEL_START arrives (the new bobber's create trails it).</summary>
+    private static GameSessionData RecastWithOldBobberAlive(uint spellId = FishingArtisan)
+    {
+        var session = NewSession();
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate())); // natural end
+        session.OnLocalChannelStart(spellId, ChannelDurationMs);
+        BobberCreated(session, NewBobber);
+        return session;
     }
 
     [Fact]
-    public void RecastAfterRecentClose_DropsStaleTail_OnceOnly()
+    public void Wedge_ZeroUpdateHeld_DroppedByOldBobberDestroy_ChannelStaysOpen()
     {
-        var session = NewSession();
-        long recastTick = RecastIntoTeardownWindow(session);
+        var session = RecastWithOldBobberAlive();
 
-        // The captured wedge: teardown tail lands ~100ms behind the new CHANNEL_START.
-        Assert.True(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
+        // Captured batch order: UPDATE_OBJECT(old) → CHANNEL_UPDATE(0) → FISH_NOT_HOOKED → DESTROY(old).
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.True(Destroyed(session, OldBobber));
+        Assert.Null(session.HeldLocalChannelZeroUpdate);
         // The channel we protected stays open (also keeps the #244 emote guard honest).
         Assert.Equal(FishingArtisan, session.LocalChannelSpellId);
-        // One-shot: only one stale tail is ever owed — a second zero-update is genuine.
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 200));
+        Assert.Null(session.TakeHeldLocalChannelZeroUpdateAtDrain());
+        // Disarmed: the next zero-update (this channel's real end) is genuine.
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.Equal(0u, session.LocalChannelSpellId);
+    }
+
+    [Fact]
+    public void Wedge_FishNotHookedAlsoAnchorsTheDrop()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.True(session.OnFishingBobberTeardownAnchor());
+        Assert.False(Destroyed(session, OldBobber)); // nothing left to drop
+        Assert.Equal(FishingArtisan, session.LocalChannelSpellId);
+    }
+
+    [Fact]
+    public void OldBobberDestroyBeforeZeroUpdate_SamePass_Drops()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.False(Destroyed(session, OldBobber)); // nothing held yet: remembered for this pass
+        Assert.Equal(Disposition.Dropped, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.Equal(FishingArtisan, session.LocalChannelSpellId);
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate())); // one-shot
+    }
+
+    [Fact]
+    public void OldBobberDestroyThenDrain_Disarms()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.False(Destroyed(session, OldBobber));
+        Assert.Null(session.TakeHeldLocalChannelZeroUpdateAtDrain()); // pass ended, nothing owed any more
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.Equal(0u, session.LocalChannelSpellId);
+    }
+
+    [Fact]
+    public void HeldWithoutAnchor_ReleasedAtDrain_AsGenuineEnd()
+    {
+        var session = RecastWithOldBobberAlive();
+        var update = ZeroUpdate();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(update));
+        Assert.False(Destroyed(session, SomeMob)); // some other object's destroy is not an anchor
+        Assert.Same(update, session.TakeHeldLocalChannelZeroUpdateAtDrain());
+        Assert.Equal(0u, session.LocalChannelSpellId);
+        Assert.Equal(default, session.StaleZeroUpdateBobberGuid);
+    }
+
+    [Fact]
+    public void OldBobberAlreadyDestroyed_DoesNotArm()
+    {
+        var session = NewSession();
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.False(Destroyed(session, OldBobber)); // teardown finished before the recast
+
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        Assert.Equal(default, session.StaleZeroUpdateBobberGuid);
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
         Assert.Equal(0u, session.LocalChannelSpellId);
     }
 
@@ -53,79 +143,54 @@ public class ChannelStaleZeroUpdateTests
     public void FirstCastOfSession_GenuineEarlyInterrupt_Forwards()
     {
         var session = NewSession();
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, T0);
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
 
-        // No previous fishing channel ⇒ no bobber can be owed a teardown ⇒ a zero-update
-        // 100ms in (mob damage, movement interrupt) is genuine and must end the channel.
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(T0 + 100));
+        // No previous bobber ⇒ nothing owed ⇒ a zero-update 100ms in (mob damage) is genuine.
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
         Assert.Equal(0u, session.LocalChannelSpellId);
-    }
-
-    [Fact]
-    public void RecastLongAfterClose_DoesNotArm()
-    {
-        var session = NewSession();
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, T0);
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(T0 + ChannelDurationMs));
-
-        // Recast after the old bobber is provably gone — nothing stale can arrive.
-        long recastTick = T0 + ChannelDurationMs + GameSessionData.FishingBobberTeardownLagMs;
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, recastTick);
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
     }
 
     [Fact]
     public void ReplacedWhileStillOpen_ArmsGuard()
     {
+        // Recast mid-channel with no zero-update seen in between: the old bobber is alive,
+        // its teardown will finish the new channel, and that zero-update is droppable.
         var session = NewSession();
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, T0);
-
-        // Recast mid-channel with no zero-update seen in between: the replaced channel
-        // counts as closed now, so its late teardown tail is still owed and droppable.
-        long recastTick = T0 + 15000;
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, recastTick);
-        Assert.True(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        Assert.Equal(OldBobber, session.StaleZeroUpdateBobberGuid);
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.True(Destroyed(session, OldBobber));
     }
 
     [Fact]
-    public void BreakActionAfterStart_DisarmsGuard()
+    public void BreakActionAfterStart_ForwardsImmediately()
     {
-        var session = NewSession();
-        long recastTick = RecastIntoTeardownWindow(session);
+        var session = RecastWithOldBobberAlive();
 
-        // Player clicked a GO / cancelled right after recasting — the zero-update that
-        // follows is the genuine result of that action and must reach the client.
+        // Player moved / cast / clicked a GO right after recasting — the zero-update that
+        // follows is the genuine result of that action and must reach the client now.
         session.RecordLocalChannelBreakAction();
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
         Assert.Equal(0u, session.LocalChannelSpellId);
+        Assert.Equal(default, session.StaleZeroUpdateBobberGuid);
     }
 
     [Fact]
-    public void BreakActionFromPreviousCast_ClearedByStart_StillDrops()
+    public void BreakActionFromPreviousCast_ClearedByStart_StillHolds()
     {
         var session = NewSession();
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, T0);
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
         session.RecordLocalChannelBreakAction(); // e.g. clicked the old bobber early
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(T0 + 5000));
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
 
         // The new CHANNEL_START resets the break flag — an earlier cast's action must
         // not disarm the guard for the channel that follows it.
-        long recastTick = T0 + 6500;
-        session.OnLocalChannelStartAtTick(FishingArtisan, ChannelDurationMs, recastTick);
-        Assert.True(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
-    }
-
-    [Fact]
-    public void ZeroUpdatePastWindow_Forwards()
-    {
-        var session = NewSession();
-        long recastTick = RecastIntoTeardownWindow(session);
-
-        // Stale tails land within one server update batch of the START; anything at or
-        // past the window bound (e.g. the real end of this channel) is genuine.
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(
-            recastTick + GameSessionData.StaleChannelZeroUpdateWindowMs));
-        Assert.Equal(0u, session.LocalChannelSpellId);
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
     }
 
     [Fact]
@@ -133,9 +198,29 @@ public class ChannelStaleZeroUpdateTests
     {
         // A genuine early interrupt of a combat channel (damage pushback at <1.5s into
         // Mind Flay) must reach the client, or the cast bar wedges the other way.
+        var session = RecastWithOldBobberAlive(MindFlay);
+        Assert.Equal(default, session.StaleZeroUpdateBobberGuid);
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+    }
+
+    [Fact]
+    public void NewStart_SupersedesAnythingHeld()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        Assert.Null(session.HeldLocalChannelZeroUpdate);
+        Assert.Null(session.TakeHeldLocalChannelZeroUpdateAtDrain());
+    }
+
+    [Fact]
+    public void DestroyOfNewestBobber_ForgetsIt()
+    {
         var session = NewSession();
-        long recastTick = RecastIntoTeardownWindow(session, MindFlay);
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(recastTick + 100));
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        BobberCreated(session, OldBobber);
+        Assert.False(Destroyed(session, OldBobber));
+        Assert.Equal(default, session.LocalFishingBobberGuid);
     }
 
     [Fact]
@@ -143,9 +228,9 @@ public class ChannelStaleZeroUpdateTests
     {
         // Pre-existing #244 behavior: a CHANNEL_START with no duration means no channel.
         var session = NewSession();
-        session.OnLocalChannelStartAtTick(FishingArtisan, 0, T0);
+        session.OnLocalChannelStart(FishingArtisan, 0);
         Assert.Equal(0u, session.LocalChannelSpellId);
-        Assert.False(session.ConsumeLocalChannelZeroUpdateAtTick(T0 + 100));
+        Assert.Equal(Disposition.Forward, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
     }
 
     [Theory]
