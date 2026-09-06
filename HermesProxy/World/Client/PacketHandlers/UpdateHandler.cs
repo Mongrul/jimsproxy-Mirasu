@@ -240,8 +240,10 @@ public partial class WorldClient
         GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
 
         // JimsProxy (fishing recast wedge): the previous bobber's destroy is the anchor
-        // that lets a held channel zero-update be dropped as its teardown.
+        // that lets a held channel zero-update be dropped as its teardown, and the new
+        // bobber's destroy is where the kept-alive client channel ends.
         DropHeldChannelZeroUpdateIfAnchored(guid, "destroy_object");
+        EndOrphanedClientChannelIfBobber(guid);
 
         // JimsProxy (PR #161 follow-up — destroy-hook fast path): if any pending
         // cast was aimed at this GUID, evict it now and emit synthetic

@@ -224,6 +224,55 @@ public class ChannelStaleZeroUpdateTests
     }
 
     [Fact]
+    public void AfterDrop_ClientChannelIsOrphaned_EndedByNewBobberDestroy()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.True(Destroyed(session, OldBobber));
+
+        // The server has no channel any more; the client's is ours to end, and only the
+        // new bobber's destroy (catch looted, fish escaped, timed out) ends it.
+        Assert.Equal(NewBobber, session.OrphanedClientChannelBobberGuid);
+        Assert.False(session.TakeOrphanedClientChannelEnd(SomeMob));
+        Assert.Equal(FishingArtisan, session.LocalChannelSpellId);
+        Assert.True(session.TakeOrphanedClientChannelEnd(NewBobber));
+        Assert.Equal(0u, session.LocalChannelSpellId);
+        Assert.False(session.TakeOrphanedClientChannelEnd(NewBobber)); // one-shot
+    }
+
+    [Fact]
+    public void AfterDropViaEarlyAnchor_ClientChannelIsOrphaned()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.False(Destroyed(session, OldBobber));
+        Assert.Equal(Disposition.Dropped, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.Equal(NewBobber, session.OrphanedClientChannelBobberGuid);
+    }
+
+    [Fact]
+    public void OrphanedChannel_ClearedByNewStartOrGenuineEnd()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.True(Destroyed(session, OldBobber));
+
+        // A recast while orphaned: the new START owns the client channel again.
+        session.OnLocalChannelStart(FishingArtisan, ChannelDurationMs);
+        Assert.Equal(default, session.OrphanedClientChannelBobberGuid);
+        Assert.Equal(NewBobber, session.StaleZeroUpdateBobberGuid); // and the orphan bobber, still alive, is the next teardown owed
+    }
+
+    [Fact]
+    public void ReleasedAtDrain_NothingOrphaned()
+    {
+        var session = RecastWithOldBobberAlive();
+        Assert.Equal(Disposition.Held, session.ClassifyLocalChannelZeroUpdate(ZeroUpdate()));
+        Assert.NotNull(session.TakeHeldLocalChannelZeroUpdateAtDrain());
+        Assert.Equal(default, session.OrphanedClientChannelBobberGuid);
+        Assert.False(session.TakeOrphanedClientChannelEnd(NewBobber));
+    }
+
+    [Fact]
     public void ZeroDurationStart_ClosesChannelWindow()
     {
         // Pre-existing #244 behavior: a CHANNEL_START with no duration means no channel.

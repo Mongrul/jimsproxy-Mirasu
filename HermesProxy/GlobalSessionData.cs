@@ -177,6 +177,7 @@ public sealed class GameSessionData
     public bool LocalChannelBreakActionSeen;
     public bool StaleBobberTeardownSeenThisPass;
     public SpellChannelUpdate? HeldLocalChannelZeroUpdate;
+    public WowGuid128 OrphanedClientChannelBobberGuid; // set after a drop: the client's channel outlives the server's; the proxy ends it when this bobber goes
 
     /// <summary>True while the local player's channel window (tracked from
     /// MSG_CHANNEL_START/UPDATE) is open, with a small grace margin. Used to
@@ -213,6 +214,7 @@ public sealed class GameSessionData
         StaleBobberTeardownSeenThisPass = false;
         HeldLocalChannelZeroUpdate = null; // a new START supersedes anything still held
         StaleZeroUpdateBobberGuid = default;
+        OrphanedClientChannelBobberGuid = default;
         if (!GameData.IsFishingChannelSpell(LocalChannelSpellId) || LocalFishingBobberGuid == default)
             return;
         // The new bobber's create block trails this START in the same batch, so the newest
@@ -241,12 +243,14 @@ public sealed class GameSessionData
             // update with no time remaining — close our window early.
             LocalChannelSpellId = 0;
             StaleZeroUpdateBobberGuid = default;
+            OrphanedClientChannelBobberGuid = default;
             return LocalChannelZeroUpdateDisposition.Forward;
         }
         if (StaleBobberTeardownSeenThisPass)
         {
             StaleBobberTeardownSeenThisPass = false;
             StaleZeroUpdateBobberGuid = default;
+            OrphanedClientChannelBobberGuid = LocalFishingBobberGuid;
             return LocalChannelZeroUpdateDisposition.Dropped;
         }
         HeldLocalChannelZeroUpdate = update;
@@ -274,6 +278,22 @@ public sealed class GameSessionData
         }
         HeldLocalChannelZeroUpdate = null;
         StaleZeroUpdateBobberGuid = default;
+        OrphanedClientChannelBobberGuid = LocalFishingBobberGuid;
+        return true;
+    }
+
+    /// <summary>
+    /// JimsProxy (fishing recast wedge 2026-09-01): after a drop the server has no channel
+    /// but the client still does, so nothing on the wire will ever end it. The new bobber's
+    /// SMSG_DESTROY_OBJECT (catch looted, fish escaped, or timed out) is where the server
+    /// would have ended a channel of its own — true = the caller ends the client's now.
+    /// </summary>
+    public bool TakeOrphanedClientChannelEnd(WowGuid128 destroyedGuid)
+    {
+        if (OrphanedClientChannelBobberGuid == default || destroyedGuid != OrphanedClientChannelBobberGuid)
+            return false;
+        OrphanedClientChannelBobberGuid = default;
+        LocalChannelSpellId = 0;
         return true;
     }
 
@@ -295,6 +315,7 @@ public sealed class GameSessionData
             return null;
         HeldLocalChannelZeroUpdate = null;
         StaleZeroUpdateBobberGuid = default;
+        OrphanedClientChannelBobberGuid = default;
         LocalChannelSpellId = 0;
         return held;
     }
