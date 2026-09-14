@@ -320,10 +320,16 @@ public partial class WorldSocket
                 ? ref GetSession().GameState.CurrentClientAutoRepeatCast
                 : ref GetSession().GameState.CurrentClientNextMeleeCast);
 
+            if (currentCast != null && isAutoRepeat)
+            {
+                // JimsProxy (ranged auto-repeat): `/cast !Auto Shot` re-sends the press on every key repeat for as long as the series runs (the client's `!` test walks its predicted-cast ring and the press object is not there through the proxy), and forwarding one makes the 1.12 server interrupt the series. A native server ignores the duplicate outright (TrinityCore: "client is resending autoshot cast opcode"), so do the same: no failure either, since a CAST_FAILED on the duplicate fires UNIT_SPELLCAST_FAILED_QUIET and swing-timer addons read that as the 0.5 s re-arm delay. The client's own cancel walk ends every ring object of the spell when the series stops.
+                if (Framework.Settings.DebugOutput)
+                    Log.Event("cast.autorepeat_duplicate_press_dropped", new { spell_id = cast.Cast.SpellID, client_cast_id = cast.Cast.CastID.ToString() });
+                return;
+            }
             if (currentCast != null)
             {
                 // Already have one of this type in progress - reject
-                // JimsProxy (ranged auto-repeat): a held key re-sends the Auto Shot press every 100-150 ms until the first arrow flies; each one is a fresh client press object, failed here on its own client id, never forwarded (a forwarded re-press makes the 1.12 server interrupt the running series, then the client re-arms and the two loop).
                 castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, cast.Cast.SpellID, 10000 + cast.Cast.CastID.GetCounter());
                 SendCastRequestFailed(castRequest, false);
                 return;
