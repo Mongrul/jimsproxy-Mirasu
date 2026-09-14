@@ -2852,6 +2852,18 @@ public partial class WorldClient
             if (Framework.Settings.DebugOutput)
                 Log.Event("spell.go.autorepeat_sent", new { spell_id = spell.Cast.SpellID, cast_id = spell.Cast.CastID.ToString() });
         }
+        // JimsProxy (ranged auto-repeat): the tick GO just reset the swing, so the duplicate presses held for the series are answered now, as far from the swing-timer aim window as a quiet failure can land; each answer frees that press's client object.
+        if (isRangedAutoAttack && spell.Cast.CasterUnit == GetSession().GameState.CurrentPlayerGuid)
+        {
+            var heldDuplicates = GetSession().GameState.TakeHeldAutoRepeatDuplicatePresses();
+            if (heldDuplicates != null)
+            {
+                foreach (var duplicate in heldDuplicates)
+                    GetSession().InstanceSocket.SendCastRequestFailed(duplicate, false, SpellCastResultClassic.DontReport);
+                if (Framework.Settings.DebugOutput)
+                    Log.Event("cast.autorepeat_duplicate_presses_answered_after_go", new { spell_id = spell.Cast.SpellID, cast_id = spell.Cast.CastID.ToString(), count = heldDuplicates.Count });
+            }
+        }
 
         // JimsProxy (dup-failure frame hold): the local cast's GO is on the wire — release any
         // dup failures held against it now, AFTER the GO (Sugar's replay position: the failure

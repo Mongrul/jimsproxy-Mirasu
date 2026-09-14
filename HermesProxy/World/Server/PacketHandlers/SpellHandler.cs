@@ -322,9 +322,16 @@ public partial class WorldSocket
 
             if (currentCast != null && isAutoRepeat)
             {
-                // JimsProxy (ranged auto-repeat): `/cast !Auto Shot` re-sends the press on every key repeat for as long as the series runs (the client's `!` test walks its predicted-cast ring and the press object is not there through the proxy), and forwarding one makes the 1.12 server interrupt the series. A native server ignores the duplicate outright (TrinityCore: "client is resending autoshot cast opcode"), so do the same: no failure either, since a CAST_FAILED on the duplicate fires UNIT_SPELLCAST_FAILED_QUIET and swing-timer addons read that as the 0.5 s re-arm delay. The client's own cancel walk ends every ring object of the spell when the series stops.
+                // JimsProxy (ranged auto-repeat): `/cast !Auto Shot` re-sends the press on every key repeat for as long as the series runs (the client's `!` test walks its predicted-cast ring and the press object is not there through the proxy), and forwarding one makes the 1.12 server interrupt the series. A native server ignores the duplicate outright (TrinityCore: "client is resending autoshot cast opcode"). The client still needs each one answered on its client id (DontReport, no PREPARE: the #517 shape) or its object sits in the ring until the series ends, so the answer is held for the next tick GO, where it lands outside every swing-timer aim window; only an over-full hold answers on arrival.
+                if (GetSession().GameState.HoldAutoRepeatDuplicatePress(castRequest))
+                {
+                    if (Framework.Settings.DebugOutput)
+                        Log.Event("cast.autorepeat_duplicate_press_held", new { spell_id = cast.Cast.SpellID, client_cast_id = cast.Cast.CastID.ToString(), held = currentCast.HeldDuplicatePresses?.Count ?? 0 });
+                    return;
+                }
+                SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
                 if (Framework.Settings.DebugOutput)
-                    Log.Event("cast.autorepeat_duplicate_press_dropped", new { spell_id = cast.Cast.SpellID, client_cast_id = cast.Cast.CastID.ToString() });
+                    Log.Event("cast.autorepeat_duplicate_press_answered_on_arrival", new { spell_id = cast.Cast.SpellID, client_cast_id = cast.Cast.CastID.ToString(), held = currentCast.HeldDuplicatePresses?.Count ?? 0 });
                 return;
             }
             if (currentCast != null)
