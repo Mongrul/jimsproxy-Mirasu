@@ -1374,16 +1374,6 @@ public sealed class GameSessionData
     // is merged against state the client no longer has, and the previous
     // buff bar lingers stale until reload.
     public HashSet<WowGuid128> NeedsFullAuraRefresh = [];
-    // JimsProxy (synth-spell-start-for-autoshot): timestamp of the most recent
-    // natural SMSG_SPELL_START forwarded for the local player's ranged auto
-    // attack (Auto Shot 75 / Shoot 5019). The 1.12 server only emits SPELL_START
-    // at toggle/retarget — every subsequent auto-repeat tick arrives as a bare
-    // SPELL_GO. Modern Classic 1.14 servers emit SPELL_START per tick, so any
-    // CAST_START-driven swing-timer addon (e.g. Kaedin's swing timer) only
-    // fires once per series via the proxy. HandleSpellGo synthesizes a
-    // SPELL_START before the GO when no natural one was forwarded recently
-    // (window: AutoShotSynthSpellStartGapMs).
-    public Dictionary<uint, long> LastNaturalAutoShotSpellStartMs = [];
     // JimsProxy (ranged auto-repeat): the last two tick GO CastIDs per (caster, spell) with their send time, so a damage log carries its own shot's CastID even when the previous shot's hit lands after the next GO.
     private readonly Dictionary<(WowGuid128 Caster, uint SpellId), Queue<(WowGuid128 CastId, long SentMs)>> _autoRepeatTickCastIds = [];
     private const int MaxAutoRepeatTickCastIds = 2;
@@ -1417,6 +1407,18 @@ public sealed class GameSessionData
             return true;
         }
         return false;
+    }
+
+    // JimsProxy (ranged auto-repeat): the press START stays open for the whole series like a native server's (the client ends it itself when its auto-repeat state clears), so its forwarded-START FIFO copy is released with the slot, never by a GO; a retarget START still waiting for its GO goes with it.
+    public void EndAutoRepeatSlot()
+    {
+        var slot = CurrentClientAutoRepeatCast;
+        if (slot == null)
+            return;
+        RemoveForwardedStartCastId(slot.SpellId, slot.ServerGUID);
+        if (slot.PendingNaturalStartCastId is { } pendingStartCastId)
+            RemoveForwardedStartCastId(slot.SpellId, pendingStartCastId);
+        CurrentClientAutoRepeatCast = null;
     }
     public TradeSession? CurrentTrade = null;
     public HashSet<uint> RequestedItemHotfixes = [];
@@ -4239,9 +4241,9 @@ public sealed class GameSessionData
 public class ClientCastRequest
 {
     public bool HasStarted;
-    // JimsProxy (ranged anim skip): auto-repeat slot only — the press's GO carries the prepared ServerGUID; later ticks keep their own per-tick CastID.
+    // JimsProxy (ranged auto-repeat): auto-repeat slot only — set by the series' first tick GO; a natural START after it is a retarget or retry START, not the press.
     public bool FirstGoDelivered;
-    // JimsProxy (ranged anim skip): auto-repeat slot only — the CastID of a forwarded natural START (press, retarget or retry) that the next GO must carry so the pair closes.
+    // JimsProxy (ranged auto-repeat): auto-repeat slot only — the CastID of a forwarded natural START after the first tick (retarget, retry) that the next GO must carry so the pair closes; never the press START, which stays open for the series.
     public WowGuid128? PendingNaturalStartCastId;
     public uint SpellId;
     public uint LegacySpellId; // 0 = same as SpellId; non-zero when modern client used a renumbered spell (e.g. SoM 1.14.1+ items)

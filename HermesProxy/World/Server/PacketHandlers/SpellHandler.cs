@@ -323,6 +323,7 @@ public partial class WorldSocket
             if (currentCast != null)
             {
                 // Already have one of this type in progress - reject
+                // JimsProxy (ranged auto-repeat): a held key re-sends the Auto Shot press every 100-150 ms until the first arrow flies; each one is a fresh client press object, failed here on its own client id, never forwarded (a forwarded re-press makes the 1.12 server interrupt the running series, then the client re-arms and the two loop).
                 castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, cast.Cast.SpellID, 10000 + cast.Cast.CastID.GetCounter());
                 SendCastRequestFailed(castRequest, false);
                 return;
@@ -1174,7 +1175,8 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_CANCEL_AUTO_REPEAT_SPELL)]
     void HandleCancelAutoRepeatSpell(CancelAutoRepeatSpell spell)
     {
-        GetSession().GameState.CurrentClientAutoRepeatCast = null;
+        // JimsProxy (ranged auto-repeat): the client has already ended the series' cast objects (this packet comes from that path), so the slot and the press START's FIFO copy go together.
+        GetSession().GameState.EndAutoRepeatSlot();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_AUTO_REPEAT_SPELL);
         SendPacketToServer(packet);
     }
