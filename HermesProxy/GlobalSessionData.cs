@@ -928,12 +928,19 @@ public sealed class GameSessionData
             return CurrentClientNextMeleeCast;
         if (Matches(CurrentClientAutoRepeatCast, castId))
             return CurrentClientAutoRepeatCast;
-        foreach (var cast in PendingNormalCasts)
-            if (Matches(cast, castId))
-                return cast;
-        foreach (var cast in PendingPetCasts)
-            if (Matches(cast, castId))
-                return cast;
+        // Walk the queues under PendingCastsLock like every other read walk here: the preferred-state
+        // dequeue and the rebuild paths empty and re-fill the queue under it, and an unlocked snapshot
+        // taken mid-rebuild would report a live press as absent, the exact null signature this lookup
+        // exists to surface for a stale client object.
+        lock (PendingCastsLock)
+        {
+            foreach (var cast in PendingNormalCasts)
+                if (Matches(cast, castId))
+                    return cast;
+            foreach (var cast in PendingPetCasts)
+                if (Matches(cast, castId))
+                    return cast;
+        }
         return null;
     }
 

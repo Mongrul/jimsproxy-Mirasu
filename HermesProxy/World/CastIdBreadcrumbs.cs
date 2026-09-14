@@ -3,6 +3,8 @@ using HermesProxy.World.Server.Packets;
 namespace HermesProxy.World;
 
 // JimsProxy (cast-id breadcrumbs): DebugOutput-gated trail of every cast id we hand the client, so an Esc press names the exact object.
+// Ids are written twice: `*cast_id` in the record form every other cast event in the log uses (WowGuid128.ToString(),
+// so one grep finds the id across events), and `*cast_id_hex` as one fixed-width high-then-low hex word.
 public static class CastIdBreadcrumbs
 {
     public static string Hex(WowGuid128 guid) => $"0x{guid.High:X16}{guid.Low:X16}";
@@ -16,8 +18,10 @@ public static class CastIdBreadcrumbs
                 return new
                 {
                     packet = "prepare",
-                    client_cast_id = Hex(prepare.ClientCastID),
-                    cast_id = Hex(prepare.ServerCastID),
+                    client_cast_id = prepare.ClientCastID.ToString(),
+                    client_cast_id_hex = Hex(prepare.ClientCastID),
+                    cast_id = prepare.ServerCastID.ToString(),
+                    cast_id_hex = Hex(prepare.ServerCastID),
                     cast_id_counter = prepare.ServerCastID.GetCounter(),
                 };
             case SpellStart start:
@@ -29,7 +33,8 @@ public static class CastIdBreadcrumbs
                 {
                     packet = "cast_failed",
                     spell_id = failed.SpellID,
-                    cast_id = Hex(failed.CastID),
+                    cast_id = failed.CastID.ToString(),
+                    cast_id_hex = Hex(failed.CastID),
                     cast_id_counter = failed.CastID.GetCounter(),
                     reason = failed.Reason,
                 };
@@ -40,7 +45,8 @@ public static class CastIdBreadcrumbs
                 {
                     packet = "spell_failure",
                     spell_id = failure.SpellID,
-                    cast_id = Hex(failure.CastID),
+                    cast_id = failure.CastID.ToString(),
+                    cast_id_hex = Hex(failure.CastID),
                     cast_id_counter = failure.CastID.GetCounter(),
                     reason = (uint)failure.Reason,
                 };
@@ -57,9 +63,11 @@ public static class CastIdBreadcrumbs
         {
             packet = phase,
             spell_id = cast.SpellID,
-            cast_id = Hex(cast.CastID),
+            cast_id = cast.CastID.ToString(),
+            cast_id_hex = Hex(cast.CastID),
             cast_id_counter = cast.CastID.GetCounter(),
-            original_cast_id = cast.OriginalCastID.IsEmpty() ? null : Hex(cast.OriginalCastID),
+            original_cast_id = cast.OriginalCastID.IsEmpty() ? null : cast.OriginalCastID.ToString(),
+            original_cast_id_hex = cast.OriginalCastID.IsEmpty() ? null : Hex(cast.OriginalCastID),
             cast_flags = cast.CastFlags,
         };
     }

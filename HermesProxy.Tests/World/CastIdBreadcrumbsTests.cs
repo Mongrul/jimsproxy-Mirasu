@@ -28,8 +28,10 @@ public class CastIdBreadcrumbsTests
         var prepare = new SpellPrepare { ClientCastID = new WowGuid128(1, 2), ServerCastID = new WowGuid128(3, 4) };
         var json = Json(CastIdBreadcrumbs.Describe(prepare, Player));
         Assert.Equal("prepare", json.GetProperty("packet").GetString());
-        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(1, 2)), json.GetProperty("client_cast_id").GetString());
-        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(3, 4)), json.GetProperty("cast_id").GetString());
+        Assert.Equal(new WowGuid128(1, 2).ToString(), json.GetProperty("client_cast_id").GetString());
+        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(1, 2)), json.GetProperty("client_cast_id_hex").GetString());
+        Assert.Equal(new WowGuid128(3, 4).ToString(), json.GetProperty("cast_id").GetString());
+        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(3, 4)), json.GetProperty("cast_id_hex").GetString());
     }
 
     [Fact]
@@ -43,8 +45,10 @@ public class CastIdBreadcrumbsTests
         var json = Json(CastIdBreadcrumbs.Describe(start, Player));
         Assert.Equal("start", json.GetProperty("packet").GetString());
         Assert.Equal(11689, json.GetProperty("spell_id").GetInt32());
-        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(77, 0)), json.GetProperty("cast_id").GetString());
+        Assert.Equal(new WowGuid128(77, 0).ToString(), json.GetProperty("cast_id").GetString());
+        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(77, 0)), json.GetProperty("cast_id_hex").GetString());
         Assert.Equal(JsonValueKind.Null, json.GetProperty("original_cast_id").ValueKind);
+        Assert.Equal(JsonValueKind.Null, json.GetProperty("original_cast_id_hex").ValueKind);
 
         var go = new SpellGo();
         go.Cast.CasterGUID = Player;
@@ -53,7 +57,8 @@ public class CastIdBreadcrumbsTests
         go.Cast.OriginalCastID = new WowGuid128(77, 0);
         json = Json(CastIdBreadcrumbs.Describe(go, Player));
         Assert.Equal("go", json.GetProperty("packet").GetString());
-        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(77, 0)), json.GetProperty("original_cast_id").GetString());
+        Assert.Equal(new WowGuid128(77, 0).ToString(), json.GetProperty("original_cast_id").GetString());
+        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(77, 0)), json.GetProperty("original_cast_id_hex").GetString());
 
         var observed = new SpellGo();
         observed.Cast.CasterGUID = Other;
@@ -68,7 +73,8 @@ public class CastIdBreadcrumbsTests
         var json = Json(CastIdBreadcrumbs.Describe(failed, Player));
         Assert.Equal("cast_failed", json.GetProperty("packet").GetString());
         Assert.Equal(170u, json.GetProperty("reason").GetUInt32());
-        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(5, 6)), json.GetProperty("cast_id").GetString());
+        Assert.Equal(new WowGuid128(5, 6).ToString(), json.GetProperty("cast_id").GetString());
+        Assert.Equal(CastIdBreadcrumbs.Hex(new WowGuid128(5, 6)), json.GetProperty("cast_id_hex").GetString());
 
         var failure = new SpellFailure { CasterUnit = Player, CastID = new WowGuid128(7, 8), SpellID = 11661, Reason = 28 };
         json = Json(CastIdBreadcrumbs.Describe(failure, Player));

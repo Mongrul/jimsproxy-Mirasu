@@ -31,7 +31,11 @@ choke point, DebugOutput on, every local-player `SMSG_SPELL_PREPARE` (client id 
 `SMSG_SPELL_START`, `SMSG_SPELL_GO`, `SMSG_CAST_FAILED` and `SMSG_SPELL_FAILURE` emits `cast.wire`
 with the cast id exactly as written to the wire (`World/CastIdBreadcrumbs.cs`). Together an Escape
 press in a log points at the exact cast and says whether its id ever matched anything we sent.
-No behaviour change.
+No behaviour change. Review notes: the shipped config has DebugOutput off, so a reporter's log
+carries the Escape line only; the wire trail needs DebugOutput on. Ids are written in the record
+form every other cast event uses (`cast_id`) with a fixed-width hex twin (`cast_id_hex`), and the
+pending lookup walks the cast queues under `PendingCastsLock` like every other read walk, so a
+rebuild in flight on the other thread cannot make a live press read as absent.
 
 **Verification:** `HermesProxy.Tests/World/CastIdBreadcrumbsTests.cs` (6 tests: hex format,
 per-packet payloads, local-caster gating, pending lookup across all six slots); suite 1081/1081.

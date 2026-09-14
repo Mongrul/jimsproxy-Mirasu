@@ -1120,7 +1120,8 @@ public partial class WorldSocket
         Log.Event("spell.cancel_cast", new
         {
             spell_id = cast.SpellID,
-            cast_id = CastIdBreadcrumbs.Hex(cast.CastID),
+            cast_id = cast.CastID.ToString(),
+            cast_id_hex = CastIdBreadcrumbs.Hex(cast.CastID),
             cast_id_counter = cast.CastID.GetCounter(),
             cast_id_empty = cast.CastID.IsEmpty(),
             pending_match = cancelled == null ? null : (cancelled.ClientGUID == cast.CastID ? "client_id" : "server_id"),
