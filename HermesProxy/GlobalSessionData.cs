@@ -910,6 +910,40 @@ public sealed class GameSessionData
         }
     }
 
+    // JimsProxy (cast-id breadcrumbs): find the pending press a client cast id belongs to, by client or server id.
+    public ClientCastRequest? FindPendingCastByCastId(WowGuid128 castId)
+    {
+        if (castId.IsEmpty())
+            return null;
+        static bool Matches(ClientCastRequest? cast, WowGuid128 id) =>
+            cast != null && (cast.ClientGUID == id || cast.ServerGUID == id);
+        lock (_gcdLock)
+        {
+            if (Matches(_heldGcdCast, castId))
+                return _heldGcdCast;
+            if (Matches(_heldCastTimeCast, castId))
+                return _heldCastTimeCast;
+        }
+        if (Matches(CurrentClientNextMeleeCast, castId))
+            return CurrentClientNextMeleeCast;
+        if (Matches(CurrentClientAutoRepeatCast, castId))
+            return CurrentClientAutoRepeatCast;
+        // Walk the queues under PendingCastsLock like every other read walk here: the preferred-state
+        // dequeue and the rebuild paths empty and re-fill the queue under it, and an unlocked snapshot
+        // taken mid-rebuild would report a live press as absent, the exact null signature this lookup
+        // exists to surface for a stale client object.
+        lock (PendingCastsLock)
+        {
+            foreach (var cast in PendingNormalCasts)
+                if (Matches(cast, castId))
+                    return cast;
+            foreach (var cast in PendingPetCasts)
+                if (Matches(cast, castId))
+                    return cast;
+        }
+        return null;
+    }
+
     public bool HasNonStartedPendingCastForSpell(uint spellId)
     {
         lock (PendingCastsLock)
@@ -1352,6 +1386,12 @@ public sealed class GameSessionData
     public Dictionary<uint, uint> RealSpellToLearnSpell = [];
     public Dictionary<uint, ArenaTeamData> ArenaTeams = [];
     public World.Server.Packets.MailListResult? PendingMailListPacket;
+    // JimsProxy (#508): MailID -> attachment slot of the in-flight CMSG_MAIL_TAKE_ITEM, echoed back on the
+    // error result because the legacy server omits it there and the 1.14 client keys its pending take on it.
+    // Written on the client-socket thread (the take), read and removed on the world-client thread (the
+    // result); concurrent like the other cross-thread session maps, even though the client's own
+    // pending-command gate serializes a take and its result in practice.
+    public ConcurrentDictionary<uint, uint> PendingMailTakeAttachId = new();
     public HashSet<uint> RequestedItemTextIds = [];
     public Dictionary<uint, string> ItemTexts = [];
     public Dictionary<uint, uint> BattleFieldQueueTypes = [];
