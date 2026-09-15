@@ -2355,7 +2355,9 @@ public partial class WorldClient
             bool slotMatches = autoRepeatSlot != null && autoRepeatSlot.SpellId == spell.Cast.SpellID;
             // JimsProxy (ranged auto-repeat): every tick, the first included, is its own START + GO pair on the id minted at parse time; the press START is never that pair (it stays open for the series, see HandleSpellStart). The one exception is a forwarded retarget/retry START still waiting for this GO.
             bool naturalStartPending = slotMatches && autoRepeatSlot!.PendingNaturalStartCastId != null;
-            if (!naturalStartPending)
+            // JimsProxy (ranged auto-repeat, wand): the wand's aim sound lives on the press object and plays for as long as it is open (it plays even when the press START is never forwarded), so a wand press object left open for the series hums until the series ends, where a bow's only holds the draw pose. The wand's first tick therefore closes the press object the way Blizzard's own wire closes every aim START with its GO: the press START is its START and this GO carries the prepared id (slot branch below); later ticks pair as usual.
+            bool wandPressPair = slotMatches && !autoRepeatSlot!.FirstGoDelivered && (uint)spell.Cast.SpellID == GameData.WandShootSpellId;
+            if (!naturalStartPending && !wandPressPair)
             {
                 SpellStart synthStart = new SpellStart();
                 // Mirror a native per-tick START: instant (the GO's CastTime is a proxy-uptime GCD anchor, not a cast duration) and target-list-free.
@@ -2622,6 +2624,12 @@ public partial class WorldClient
                 spell.Cast.CastID = naturalStartCastId;
                 current.PendingNaturalStartCastId = null;
                 GetSession().GameState.RemoveForwardedStartCastId((uint)spell.Cast.SpellID, naturalStartCastId);
+            }
+            else if (!current.FirstGoDelivered && (uint)spell.Cast.SpellID == GameData.WandShootSpellId)
+            {
+                // JimsProxy (ranged auto-repeat, wand): the first tick closes the press object (see the synth START above), so this GO carries the prepared id and consumes the press START's FIFO copy.
+                spell.Cast.CastID = current.ServerGUID;
+                GetSession().GameState.RemoveForwardedStartCastId((uint)spell.Cast.SpellID, current.ServerGUID);
             }
             current.FirstGoDelivered = true;
             spell.Cast.SpellXSpellVisualID = current.SpellXSpellVisualId;

@@ -33,7 +33,11 @@ presses 3..107, then every instant on a diverted id).
 
 **Change:** `World/Client/PacketHandlers/SpellHandler.cs` (`HandleSpellStart`, `HandleSpellGo`):
 every tick GO keeps its parse-minted id and gets a synthesized START on the same id; the press START
-keeps the prepared id and is never paired; a natural START after the first tick (retarget, retry) is
+keeps the prepared id and is never paired; the one exception is the wand: its aim sound lives on the
+press object and plays for as long as that object is open (it plays even when the press START is never
+forwarded), so a wand press left open hummed for the whole series, where a bow's only holds the draw
+pose; the wand's first tick GO therefore carries the prepared id and closes the press object, the way
+Blizzard's own wire closes every aim START with its GO, and later wand ticks pair as usual; a natural START after the first tick (retarget, retry) is
 remembered on the slot and its GO carries that id; damage logs are paired two ticks deep so a hit
 that lands after the next GO still carries its own shot's id (`RecordAutoRepeatTickCastId` /
 `TryPairAutoRepeatDamageLog`, 3 s max age). `GlobalSessionData.cs`: `EndAutoRepeatSlot` releases
